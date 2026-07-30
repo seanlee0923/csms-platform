@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csms-operator
+  namespace: default
+  labels:
+    app.kubernetes.io/name: csms-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: csms-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: csms-operator
+    spec:
+      serviceAccountName: csms-operator
+      containers:
+        - name: operator
+          image: csms-operator:0.1.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: healthz
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

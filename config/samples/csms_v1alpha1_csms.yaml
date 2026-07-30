@@ -1,0 +1,11 @@
+apiVersion: csms.seanlee0923.dev/v1alpha1
+kind: CSMS
+metadata:
+  name: csms-runtime
+  namespace: default
+spec:
+  image: csms-runtime:0.1.0
+  replicas: 2
+  databaseSecretName: csms-runtime-database
+  redisSecretName: csms-runtime-redis
+  apiSecretName: csms-runtime-api

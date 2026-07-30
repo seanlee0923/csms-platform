@@ -1,0 +1,23 @@
+# development-only working notes; not part of the published project
+Context.md
+
+# Claude Code local session/tool config
+.claude/
+
+# OS
+.DS_Store
+
+# editors/IDEs
+.idea/
+.vscode/
+*.swp
+
+# Go build artifacts
+/csms-server
+/csms-operator
+/csms-probe
+*.test
+*.tar
+
+# local env/secrets
+*.env
