@@ -491,7 +491,9 @@ manifest를 적용한다 — Operator가 이미 `csms-runtime` Deployment를 관
   추가해([seanlee0923/ocpp#1](https://github.com/seanlee0923/ocpp/issues/1))
   이 Runtime에서 `CSMS_TRUSTED_PROXY_CIDRS`로 신뢰하는 프록시 CIDR를
   설정하면 `X-Forwarded-For`의 실제 station 주소로 rate limit을 적용하도록
-  고쳤다. 미설정 시에는 이전과 동일하게 동작한다(안전한 기본값).
+  고쳤다. 미설정 시에는 이전과 동일하게 동작한다(안전한 기본값). 실제
+  Ingress를 붙이고 서로 다른 두 실제 소스 주소에서 handshake를 보내
+  각자 독립된 rate limit budget을 받는 것까지 실측 검증했다.
 
 ## 세션 소유권과 명령 전달 모델
 
