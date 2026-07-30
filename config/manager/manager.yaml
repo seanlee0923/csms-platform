@@ -18,7 +18,7 @@ spec:
       serviceAccountName: csms-operator
       containers:
         - name: operator
-          image: csms-operator:0.1.1
+          image: csms-operator:0.1.2
           imagePullPolicy: IfNotPresent
           ports:
             - name: healthz
