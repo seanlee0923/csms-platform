@@ -103,6 +103,40 @@ type CSMSSpec struct {
 	// own Ingress end to end.
 	// +optional
 	Ingress *CSMSIngress `json:"ingress,omitempty"`
+
+	// TLS optionally mounts a server certificate (and, for mutual TLS, a
+	// client CA bundle) into the Runtime container so the Runtime itself
+	// terminates TLS — distinct from, and independent of, Ingress-terminated
+	// TLS. Leave unset to serve plain HTTP. Most deployments should prefer
+	// Ingress-terminated TLS (see Ingress above); set this only when the
+	// Runtime itself must see the client certificate (mutual TLS / OCPP
+	// Security Profile 3) or there is no Ingress in the path (TLS
+	// passthrough). The Operator only mounts the referenced Secrets — it
+	// never creates or renews certificate content, and it has no way to
+	// verify that the deployed Runtime actually implements TLS termination
+	// at these paths.
+	// +optional
+	TLS *CSMSTLS `json:"tls,omitempty"`
+}
+
+// CSMSTLS configures Runtime-terminated TLS. The Operator mounts
+// SecretName read-only at /etc/csms/tls/server (expecting the standard
+// kubernetes.io/tls keys tls.crt/tls.key) and, if ClientCASecretName is
+// set, mounts it read-only at /etc/csms/tls/ca (expecting a ca.crt key).
+// When TLS is active, liveness/readiness probes use the HTTPS scheme.
+type CSMSTLS struct {
+	// SecretName references an existing Secret with a TLS certificate and
+	// private key. The Operator does not create or renew this Secret.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+	SecretName string `json:"secretName"`
+
+	// ClientCASecretName references an existing Secret with a CA bundle
+	// used to verify client certificates for mutual TLS. Leave empty for
+	// TLS without client certificate verification.
+	// +optional
+	// +kubebuilder:validation:Pattern="^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+	ClientCASecretName string `json:"clientCASecretName,omitempty"`
 }
 
 // CSMSIngress configures an optional Ingress for the Runtime Service. The

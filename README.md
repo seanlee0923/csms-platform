@@ -138,6 +138,9 @@ env var를 `CSMS.spec.config`에 자유롭게 넣으면 된다(아래
 | `CSMS_INSTANCE_ID` | Pod hostname | session owner로 기록할 Runtime instance identity |
 | `CSMS_SESSION_LEASE_TTL` | `30s` | session ownership TTL |
 | `CSMS_SESSION_RENEW_INTERVAL` | `10s` | ownership 갱신 주기. TTL보다 짧아야 함(짧지 않으면 시작 시 오류) |
+| `CSMS_TLS_CERT_FILE` | `/etc/csms/tls/server/tls.crt` | 서버 인증서 경로. 파일이 존재하면 TLS 자동 활성화 |
+| `CSMS_TLS_KEY_FILE` | `/etc/csms/tls/server/tls.key` | 서버 개인키 경로 |
+| `CSMS_TLS_CLIENT_CA_FILE` | `/etc/csms/tls/ca/ca.crt` | client 인증서 검증용 CA bundle 경로. 파일이 존재하면 mutual TLS 활성화 |
 
 값 검증에 실패하면(`CSMS_SESSION_RENEW_INTERVAL >= CSMS_SESSION_LEASE_TTL` 등)
 프로세스가 시작하지 않고 exit code 2로 종료한다.
@@ -213,6 +216,7 @@ kubectl apply -f config/samples/csms_v1alpha1_csms.yaml
 | `config` | ConfigMap에 그대로 채워지는 임의의 key-value. Operator는 이 값을 해석하거나 기본값을 채우지 않는다 — 배포하는 런타임이 실제로 읽는 env var를 그대로 넣는다 |
 | `minAvailable` | 설정하면 PodDisruptionBudget 생성, 비우면 생성하지 않음 |
 | `ingress` | 설정하면 Runtime Service를 가리키는 Ingress 생성, 비우면 생성하지 않음(기본값). 아래 [Ingress(선택)](#ingress선택) 참고 |
+| `tls` | 설정하면 서버 인증서(+선택적으로 client CA)를 Runtime 컨테이너에 볼륨으로 마운트, 비우면 마운트하지 않음(기본값). Ingress TLS와는 별개다. 아래 [Runtime TLS/mTLS(선택)](#runtime-tlsmtls선택) 참고 |
 
 `redisSecretName` 없이 `replicas`를 1보다 크게 설정하는 조합은 세션 상태가
 프로세스 로컬인 Runtime에서는 안전하지 않다(분산 session ownership 없이는 어느
@@ -344,6 +348,51 @@ kubectl get csms csms-runtime -o wide
 두 작업 모두 실제 클러스터에서 Pod restart 없는 rollout으로 검증했다(아래
 [운영: 검증된 동작](#운영-검증된-동작) 참고).
 
+#### Runtime TLS/mTLS(선택)
+
+[Ingress(선택)](#ingress선택)와는 별개의 기능이다. Ingress TLS는 클러스터
+경계에서 종료되고 그 뒤(Ingress→Service→Pod) 구간은 평문인 반면, 이건
+**Runtime 컨테이너 자신이 직접 TLS를 종료**하도록 인증서를 마운트해주는
+기능이다. Ingress가 아예 없는 TLS passthrough 환경이거나, client 인증서를
+OCPP 레벨에서 직접 검증해야 하는 mTLS(Security Profile 3)가 필요할 때만
+쓴다. 대부분의 환경은 Ingress TLS만으로 충분하다.
+
+```yaml
+spec:
+  tls:
+    secretName: csms-runtime-tls          # kubernetes.io/tls Secret (tls.crt/tls.key), Operator가 만들지 않음
+    clientCASecretName: csms-runtime-ca   # 선택: 설정하면 mutual TLS(Security Profile 3)
+```
+
+| 필드 | 설명 |
+| --- | --- |
+| `secretName` | 서버 인증서/키가 담긴 기존 Secret. `/etc/csms/tls/server`에 읽기 전용으로 마운트된다(필수) |
+| `clientCASecretName` | client 인증서 검증용 CA bundle이 담긴 기존 Secret. `/etc/csms/tls/ca`에 읽기 전용으로 마운트된다. 비우면 client 인증서 검증 없는 TLS(선택) |
+
+`spec.tls`가 설정되면 liveness/readiness probe도 자동으로 HTTPS scheme을
+쓴다. Operator는 Secret을 마운트만 할 뿐, 그 안의 인증서로 실제 TLS를
+종료하는 건 전적으로 Runtime 컨테이너의 몫이다 — Operator는 Runtime이 이
+마운트를 실제로 사용하는지조차 확인할 수 없다.
+
+이 저장소의 참조 Runtime은 이 계약을 실제로 구현한다.
+
+- 시작 시 `/etc/csms/tls/server/tls.crt`·`tls.key`(경로는
+  `CSMS_TLS_CERT_FILE`/`CSMS_TLS_KEY_FILE`로 override 가능)가 존재하면
+  자동으로 TLS를 활성화한다 — 별도의 on/off 플래그는 없다. 파일이 없으면
+  그냥 평문 HTTP로 기존과 동일하게 동작한다(하위 호환).
+- `/etc/csms/tls/ca/ca.crt`(`CSMS_TLS_CLIENT_CA_FILE`)가 추가로 존재하면
+  mutual TLS를 요구한다 — client 인증서가 없으면 TLS handshake 자체가
+  실패한다.
+- mTLS일 때 `ocpp` 라이브러리의 `Security.Profile =
+  SecurityProfileTLSClientCertificate`와 `Authenticator`를 사용해, TLS
+  handshake에서 검증된 client 인증서의 CN이 URL 경로의 station identity와
+  일치하는지 OCPP WebSocket upgrade 시점에 한 번 더 확인한다. CN이 다르면
+  403으로 거부된다. `/livez`·`/readyz`·`/metrics`는 OCPP upgrade 경로가
+  아니라서 이 CN 대조는 적용되지 않고, CA로 서명된 유효한 client 인증서면
+  통과한다.
+- 인증서/키 중 하나만 있고 다른 하나가 없으면(예: 마운트 실수) 시작 시
+  바로 에러를 내고 종료한다 — 조용히 평문으로 fallback하지 않는다.
+
 ### Kubernetes — 수동 manifest (Operator 미사용 환경)
 
 Operator 없이 하나의 고정 Deployment만 운영하려면 `config/runtime`을 직접
@@ -448,12 +497,19 @@ Runtime Pod끼리는 서로 직접 HTTP를 호출하지 않는다.
   WebSocket 클라이언트가 임의 문자열로 `/metrics` 시계열을 무한 증식시키는
   경로를 막아 두었다.
 
-**TLS**: Runtime 자체는 **Security Profile 0**(TLS/mTLS 없음)으로 동작한다.
-`CSMS.spec.ingress`(위 [Ingress(선택)](#ingress선택))로 앞단에 TLS 종료
-Ingress를 붙이면 클러스터 경계에서는 TLS 위에서 동작하는 형태(Profile 2에
-준하는 노출)를 구성할 수 있지만, Ingress 뒤 Runtime Service까지 구간은 여전히
-평문이다. 충전기를 client 인증서로 검증하는 Profile 3(mTLS)은 지원하지
-않는다.
+**TLS**: 기본값은 **Security Profile 0**(TLS/mTLS 없음)이다. 두 가지 방식으로
+TLS를 켤 수 있다.
+
+- `CSMS.spec.ingress`(위 [Ingress(선택)](#ingress선택))로 앞단에 TLS 종료
+  Ingress를 붙이는 방식 — 클러스터 경계에서만 TLS가 걸리고 Ingress 뒤
+  Runtime Service까지 구간은 평문이다.
+- `CSMS.spec.tls`(위 [Runtime TLS/mTLS(선택)](#runtime-tlsmtls선택))로
+  Runtime 컨테이너 자신이 직접 TLS를 종료하는 방식 — `clientCASecretName`을
+  함께 설정하면 client 인증서로 충전기를 검증하는 **Security Profile
+  3(mutual TLS)**까지 지원한다. 이 경우 `ocpp` 라이브러리의
+  `SecurityProfileTLSClientCertificate`가 TLS handshake에서 검증된 client
+  인증서를 요구하고, Runtime의 `Authenticator`가 인증서 CN이 station
+  identity와 일치하는지 OCPP WebSocket upgrade 시점에 한 번 더 확인한다.
 
 ## 충전기 명령 API
 

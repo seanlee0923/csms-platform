@@ -409,3 +409,128 @@ func TestReconcileIngressWithoutTLSSecretOmitsTLS(t *testing.T) {
 		t.Errorf("expected no IngressClassName without IngressClassName set, got %+v", ing.Spec.IngressClassName)
 	}
 }
+
+func TestReconcileMountsRuntimeTLSSecretsAndUsesHTTPSProbes(t *testing.T) {
+	csms := &csmsv1alpha1.CSMS{
+		ObjectMeta: metav1.ObjectMeta{Name: "csms-runtime", Namespace: "default"},
+		Spec: csmsv1alpha1.CSMSSpec{
+			Image: "csms-runtime:0.1.0",
+			TLS: &csmsv1alpha1.CSMSTLS{
+				SecretName:         "csms-runtime-tls",
+				ClientCASecretName: "csms-runtime-tls-ca",
+			},
+		},
+	}
+	r, c := newReconciler(t, csms)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "csms-runtime", Namespace: "default"}}
+	ctx := context.Background()
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var deploy appsv1.Deployment
+	if err := c.Get(ctx, req.NamespacedName, &deploy); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+
+	podSpec := deploy.Spec.Template.Spec
+	foundServerVolume, foundCAVolume := false, false
+	for _, v := range podSpec.Volumes {
+		if v.Name == "tls-server" {
+			foundServerVolume = true
+			if v.Secret == nil || v.Secret.SecretName != "csms-runtime-tls" {
+				t.Errorf("unexpected tls-server volume: %+v", v)
+			}
+		}
+		if v.Name == "tls-ca" {
+			foundCAVolume = true
+			if v.Secret == nil || v.Secret.SecretName != "csms-runtime-tls-ca" {
+				t.Errorf("unexpected tls-ca volume: %+v", v)
+			}
+		}
+	}
+	if !foundServerVolume || !foundCAVolume {
+		t.Fatalf("expected both tls-server and tls-ca volumes, got %+v", podSpec.Volumes)
+	}
+
+	container := podSpec.Containers[0]
+	foundServerMount, foundCAMount := false, false
+	for _, m := range container.VolumeMounts {
+		if m.Name == "tls-server" && m.MountPath == "/etc/csms/tls/server" && m.ReadOnly {
+			foundServerMount = true
+		}
+		if m.Name == "tls-ca" && m.MountPath == "/etc/csms/tls/ca" && m.ReadOnly {
+			foundCAMount = true
+		}
+	}
+	if !foundServerMount || !foundCAMount {
+		t.Fatalf("expected read-only mounts at /etc/csms/tls/server and /etc/csms/tls/ca, got %+v", container.VolumeMounts)
+	}
+
+	if container.ReadinessProbe.HTTPGet.Scheme != corev1.URISchemeHTTPS {
+		t.Errorf("expected readiness probe scheme HTTPS, got %q", container.ReadinessProbe.HTTPGet.Scheme)
+	}
+	if container.LivenessProbe.HTTPGet.Scheme != corev1.URISchemeHTTPS {
+		t.Errorf("expected liveness probe scheme HTTPS, got %q", container.LivenessProbe.HTTPGet.Scheme)
+	}
+}
+
+func TestReconcileWithoutTLSOmitsVolumesAndUsesHTTPProbes(t *testing.T) {
+	csms := &csmsv1alpha1.CSMS{
+		ObjectMeta: metav1.ObjectMeta{Name: "csms-runtime", Namespace: "default"},
+		Spec:       csmsv1alpha1.CSMSSpec{Image: "csms-runtime:0.1.0"},
+	}
+	r, c := newReconciler(t, csms)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "csms-runtime", Namespace: "default"}}
+	ctx := context.Background()
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var deploy appsv1.Deployment
+	if err := c.Get(ctx, req.NamespacedName, &deploy); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	podSpec := deploy.Spec.Template.Spec
+	if len(podSpec.Volumes) != 0 {
+		t.Errorf("expected no volumes without spec.tls, got %+v", podSpec.Volumes)
+	}
+	container := podSpec.Containers[0]
+	if len(container.VolumeMounts) != 0 {
+		t.Errorf("expected no volume mounts without spec.tls, got %+v", container.VolumeMounts)
+	}
+	if container.ReadinessProbe.HTTPGet.Scheme != corev1.URISchemeHTTP {
+		t.Errorf("expected readiness probe scheme HTTP, got %q", container.ReadinessProbe.HTTPGet.Scheme)
+	}
+	if container.LivenessProbe.HTTPGet.Scheme != corev1.URISchemeHTTP {
+		t.Errorf("expected liveness probe scheme HTTP, got %q", container.LivenessProbe.HTTPGet.Scheme)
+	}
+}
+
+func TestReconcileMountsOnlyServerVolumeWithoutClientCA(t *testing.T) {
+	csms := &csmsv1alpha1.CSMS{
+		ObjectMeta: metav1.ObjectMeta{Name: "csms-runtime", Namespace: "default"},
+		Spec: csmsv1alpha1.CSMSSpec{
+			Image: "csms-runtime:0.1.0",
+			TLS:   &csmsv1alpha1.CSMSTLS{SecretName: "csms-runtime-tls"},
+		},
+	}
+	r, c := newReconciler(t, csms)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "csms-runtime", Namespace: "default"}}
+	ctx := context.Background()
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var deploy appsv1.Deployment
+	if err := c.Get(ctx, req.NamespacedName, &deploy); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	podSpec := deploy.Spec.Template.Spec
+	if len(podSpec.Volumes) != 1 || podSpec.Volumes[0].Name != "tls-server" {
+		t.Errorf("expected only the tls-server volume without ClientCASecretName, got %+v", podSpec.Volumes)
+	}
+}

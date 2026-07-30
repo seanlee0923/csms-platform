@@ -17,6 +17,14 @@ const (
 	defaultShutdownTimeout   = 30 * time.Second
 	defaultSessionLeaseTTL   = 30 * time.Second
 	defaultSessionRenew      = 10 * time.Second
+
+	// These default paths match the volume mount convention the Operator
+	// uses when CSMS.spec.tls is set (internal/controller's tlsServerMountPath/
+	// tlsCAMountPath). TLS activates automatically if a file exists at
+	// TLSCertFile/TLSKeyFile at startup — there is no separate on/off flag.
+	defaultTLSCertFile     = "/etc/csms/tls/server/tls.crt"
+	defaultTLSKeyFile      = "/etc/csms/tls/server/tls.key"
+	defaultTLSClientCAFile = "/etc/csms/tls/ca/ca.crt"
 )
 
 type Config struct {
@@ -32,6 +40,9 @@ type Config struct {
 	InstanceID        string
 	SessionLeaseTTL   time.Duration
 	SessionRenew      time.Duration
+	TLSCertFile       string
+	TLSKeyFile        string
+	TLSClientCAFile   string
 }
 
 func LoadConfig() (Config, error) {
@@ -47,6 +58,9 @@ func loadConfig(lookup func(string) (string, bool)) (Config, error) {
 		SessionLeaseTTL:  defaultSessionLeaseTTL,
 		SessionRenew:     defaultSessionRenew,
 		CommandRateLimit: 60,
+		TLSCertFile:      defaultTLSCertFile,
+		TLSKeyFile:       defaultTLSKeyFile,
+		TLSClientCAFile:  defaultTLSClientCAFile,
 	}
 	if value, ok := lookup("CSMS_HTTP_ADDR"); ok {
 		if strings.TrimSpace(value) == "" {
@@ -119,6 +133,15 @@ func loadConfig(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if config.SessionRenew >= config.SessionLeaseTTL {
 		return Config{}, fmt.Errorf("CSMS_SESSION_RENEW_INTERVAL must be shorter than CSMS_SESSION_LEASE_TTL")
+	}
+	if value, ok := lookup("CSMS_TLS_CERT_FILE"); ok {
+		config.TLSCertFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("CSMS_TLS_KEY_FILE"); ok {
+		config.TLSKeyFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("CSMS_TLS_CLIENT_CA_FILE"); ok {
+		config.TLSClientCAFile = strings.TrimSpace(value)
 	}
 	return config, nil
 }

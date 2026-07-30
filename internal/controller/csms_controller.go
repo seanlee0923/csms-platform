@@ -34,6 +34,11 @@ const (
 	defaultLivenessPath                  = "/livez"
 	defaultReadinessPath                 = "/readyz"
 	defaultTerminationGracePeriodSeconds = int64(30)
+
+	tlsServerVolumeName = "tls-server"
+	tlsServerMountPath  = "/etc/csms/tls/server"
+	tlsCAVolumeName     = "tls-ca"
+	tlsCAMountPath      = "/etc/csms/tls/ca"
 )
 
 // CSMSReconciler reconciles a CSMS object.
@@ -144,6 +149,44 @@ func terminationGracePeriodSeconds(csms *csmsv1alpha1.CSMS) int64 {
 	return defaultTerminationGracePeriodSeconds
 }
 
+func probeScheme(csms *csmsv1alpha1.CSMS) corev1.URIScheme {
+	if csms.Spec.TLS != nil {
+		return corev1.URISchemeHTTPS
+	}
+	return corev1.URISchemeHTTP
+}
+
+// tlsVolumes returns the Volumes and VolumeMounts that mount csms.Spec.TLS's
+// referenced Secrets read-only into the Runtime container, or nil if TLS is
+// unset. The Operator only wires these references; it never creates or
+// inspects the Secret content.
+func tlsVolumes(csms *csmsv1alpha1.CSMS) ([]corev1.Volume, []corev1.VolumeMount) {
+	if csms.Spec.TLS == nil {
+		return nil, nil
+	}
+	volumes := []corev1.Volume{
+		{
+			Name: tlsServerVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: csms.Spec.TLS.SecretName},
+			},
+		},
+	}
+	mounts := []corev1.VolumeMount{
+		{Name: tlsServerVolumeName, MountPath: tlsServerMountPath, ReadOnly: true},
+	}
+	if csms.Spec.TLS.ClientCASecretName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: tlsCAVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: csms.Spec.TLS.ClientCASecretName},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: tlsCAVolumeName, MountPath: tlsCAMountPath, ReadOnly: true})
+	}
+	return volumes, mounts
+}
+
 func (r *CSMSReconciler) reconcileService(ctx context.Context, csms *csmsv1alpha1.CSMS, labels map[string]string) error {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: csms.Name, Namespace: csms.Namespace},
@@ -197,6 +240,8 @@ func (r *CSMSReconciler) reconcileDeployment(ctx context.Context, csms *csmsv1al
 
 	terminationGrace := terminationGracePeriodSeconds(csms)
 	port := httpPort(csms)
+	scheme := probeScheme(csms)
+	volumes, volumeMounts := tlsVolumes(csms)
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: csms.Name, Namespace: csms.Namespace},
@@ -210,6 +255,7 @@ func (r *CSMSReconciler) reconcileDeployment(ctx context.Context, csms *csmsv1al
 			ObjectMeta: metav1.ObjectMeta{Labels: labels},
 			Spec: corev1.PodSpec{
 				TerminationGracePeriodSeconds: &terminationGrace,
+				Volumes:                       volumes,
 				Containers: []corev1.Container{
 					{
 						Name:            "runtime",
@@ -227,15 +273,16 @@ func (r *CSMSReconciler) reconcileDeployment(ctx context.Context, csms *csmsv1al
 						Ports: []corev1.ContainerPort{
 							{Name: "http", ContainerPort: port},
 						},
+						VolumeMounts: volumeMounts,
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{Path: readinessPath(csms), Port: intstr.FromString("http")},
+								HTTPGet: &corev1.HTTPGetAction{Path: readinessPath(csms), Port: intstr.FromString("http"), Scheme: scheme},
 							},
 							PeriodSeconds: 5,
 						},
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{Path: livenessPath(csms), Port: intstr.FromString("http")},
+								HTTPGet: &corev1.HTTPGetAction{Path: livenessPath(csms), Port: intstr.FromString("http"), Scheme: scheme},
 							},
 							PeriodSeconds: 10,
 						},

@@ -249,6 +249,37 @@ spec:
                 format: int64
                 minimum: 0
                 type: integer
+              tls:
+                description: |-
+                  TLS optionally mounts a server certificate (and, for mutual TLS, a
+                  client CA bundle) into the Runtime container so the Runtime itself
+                  terminates TLS — distinct from, and independent of, Ingress-terminated
+                  TLS. Leave unset to serve plain HTTP. Most deployments should prefer
+                  Ingress-terminated TLS (see Ingress above); set this only when the
+                  Runtime itself must see the client certificate (mutual TLS / OCPP
+                  Security Profile 3) or there is no Ingress in the path (TLS
+                  passthrough). The Operator only mounts the referenced Secrets — it
+                  never creates or renews certificate content, and it has no way to
+                  verify that the deployed Runtime actually implements TLS termination
+                  at these paths.
+                properties:
+                  clientCASecretName:
+                    description: |-
+                      ClientCASecretName references an existing Secret with a CA bundle
+                      used to verify client certificates for mutual TLS. Leave empty for
+                      TLS without client certificate verification.
+                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  secretName:
+                    description: |-
+                      SecretName references an existing Secret with a TLS certificate and
+                      private key. The Operator does not create or renew this Secret.
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                required:
+                - secretName
+                type: object
             required:
             - image
             type: object
