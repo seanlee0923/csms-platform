@@ -59,6 +59,7 @@ type CSMSSpec struct {
 	// Secret and does not inspect its keys. Leave empty to omit it.
 	// +optional
 	// +kubebuilder:default=""
+	// +kubebuilder:validation:Pattern="^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 	DatabaseSecretName string `json:"databaseSecretName,omitempty"`
 
 	// RedisSecretName references an existing Secret injected into the
@@ -67,6 +68,7 @@ type CSMSSpec struct {
 	// distributed session ownership; Replicas must then be 1.
 	// +optional
 	// +kubebuilder:default=""
+	// +kubebuilder:validation:Pattern="^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 	RedisSecretName string `json:"redisSecretName,omitempty"`
 
 	// APISecretName references an existing Secret injected into the
@@ -74,6 +76,7 @@ type CSMSSpec struct {
 	// Secret and does not inspect its keys. Leave empty to omit it.
 	// +optional
 	// +kubebuilder:default=""
+	// +kubebuilder:validation:Pattern="^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 	APISecretName string `json:"apiSecretName,omitempty"`
 
 	// Config holds arbitrary environment variables applied through the
@@ -109,11 +112,13 @@ type CSMSSpec struct {
 type CSMSIngress struct {
 	// Host is the DNS hostname routed to the Runtime Service.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
 	Host string `json:"host"`
 
 	// IngressClassName selects the Ingress controller, for example "nginx".
 	// Leave empty to use the cluster default IngressClass.
 	// +optional
+	// +kubebuilder:validation:Pattern="^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
 	// TLSSecretName references an existing Secret with a TLS certificate for
@@ -121,6 +126,7 @@ type CSMSIngress struct {
 	// plain HTTP through the Ingress, which is not appropriate for OCPP
 	// endpoints reachable outside a trusted network.
 	// +optional
+	// +kubebuilder:validation:Pattern="^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 	TLSSecretName string `json:"tlsSecretName,omitempty"`
 
 	// Annotations are applied verbatim to the generated Ingress, for example

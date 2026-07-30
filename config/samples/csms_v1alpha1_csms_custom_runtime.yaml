@@ -1,0 +1,23 @@
+# Example CSMS resource for a runtime that is NOT this repository's
+# cmd/csms-server — a different image, a different HTTP port, different
+# health check paths, and its own arbitrary environment variables. The
+# Operator only needs image/port/livenessPath/readinessPath to match what
+# the container actually serves; it does not know or care what happens
+# inside. See README.md's "직접 만든 OCPP 런타임 배포하기" section.
+apiVersion: csms.seanlee0923.dev/v1alpha1
+kind: CSMS
+metadata:
+  name: my-ocpp-runtime
+  namespace: default
+spec:
+  image: my-registry.example.com/my-ocpp-runtime:1.0.0
+  replicas: 1
+  port: 9000
+  livenessPath: /healthz
+  readinessPath: /ready
+  config:
+    MY_RUNTIME_LOG_LEVEL: "info"
+    MY_RUNTIME_HEARTBEAT_SECONDS: "300"
+  # Replicas > 1 requires redisSecretName (or an equivalent distributed
+  # session ownership Secret this runtime reads) — enforced by CEL
+  # validation on CSMSSpec.

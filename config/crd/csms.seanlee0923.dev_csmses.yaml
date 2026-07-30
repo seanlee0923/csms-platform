@@ -70,6 +70,7 @@ spec:
                   APISecretName references an existing Secret injected into the
                   Runtime container via envFrom. The Operator does not create this
                   Secret and does not inspect its keys. Leave empty to omit it.
+                pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
               config:
                 additionalProperties:
@@ -86,6 +87,7 @@ spec:
                   DatabaseSecretName references an existing Secret injected into the
                   Runtime container via envFrom. The Operator does not create this
                   Secret and does not inspect its keys. Leave empty to omit it.
+                pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
               image:
                 description: |-
@@ -113,11 +115,13 @@ spec:
                   host:
                     description: Host is the DNS hostname routed to the Runtime Service.
                     minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string
                   ingressClassName:
                     description: |-
                       IngressClassName selects the Ingress controller, for example "nginx".
                       Leave empty to use the cluster default IngressClass.
+                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     type: string
                   tlsSecretName:
                     description: |-
@@ -125,6 +129,7 @@ spec:
                       Host. The Operator does not create this Secret. Leave empty to serve
                       plain HTTP through the Ingress, which is not appropriate for OCPP
                       endpoints reachable outside a trusted network.
+                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     type: string
                 required:
                 - host
@@ -167,6 +172,7 @@ spec:
                   Runtime container via envFrom. The Operator does not create this
                   Secret and does not inspect its keys. Leave empty to disable
                   distributed session ownership; Replicas must then be 1.
+                pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
               replicas:
                 default: 1

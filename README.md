@@ -222,6 +222,12 @@ than 1: ...`). 이 검증은 순전히 replica 개수 관점의 안전장치이�
 런타임이 실제로 Redis 기반 분산 세션을 구현했는지는 Operator가 확인할 수
 없다 — 세션을 process-local로만 유지하는 런타임이라면 `replicas`는 1로 둔다.
 
+`databaseSecretName`/`redisSecretName`/`apiSecretName`과
+`ingress.host`/`ingress.ingressClassName`/`ingress.tlsSecretName`은 값이
+있을 때 Kubernetes 리소스 이름/hostname 형식(DNS-1123)을 따르는지도 apiserver
+단에서 검증한다 — 오타로 잘못된 이름을 넣었을 때 Pod 생성 실패 같은 우회적인
+증상 대신 `kubectl apply` 시점에 바로 거부된다.
+
 이 저장소의 참조 Runtime(`csms-runtime`)은 위 계약을 다음처럼 구현한다: 포트
 `8080`, `/livez`·`/readyz`, `CSMS_MYSQL_DSN`/`CSMS_REDIS_URL`/`CSMS_API_KEY(S)`
 env var(위 [설정 (환경 변수)](#설정-환경-변수) 참고), Pod 이름을 담은
@@ -286,6 +292,13 @@ env var(위 [설정 (환경 변수)](#설정-환경-변수) 참고), Pod 이름�
 같은 패턴을 따라 만들되, `internal/handlers`/`internal/stationstore` 자리에
 실제 필요한 업무 로직(인증, 결제, transaction 등)을 채워 넣으면 된다 — 이
 저장소는 그 부분을 대신 구현해주지 않는다.
+
+`config/samples/csms_v1alpha1_csms_custom_runtime.yaml`은 이 저장소의
+`csms-runtime`이 아닌 다른 이미지, 다른 포트(`9000`), 다른 probe 경로
+(`/healthz`, `/ready`), 자체 env var 이름을 쓰는 `CSMS` 예시다. 이 조합이
+실제로 배포·헬스체크되는지 원격 클러스터에서 실측 검증했다(다른 이름의
+독립 CSMS 리소스를 같은 namespace에 동시에 띄워도 label/selector가 겹치지
+않고 각자의 Service가 자기 Pod만 가리키는 것도 함께 확인).
 
 #### Ingress(선택)
 
