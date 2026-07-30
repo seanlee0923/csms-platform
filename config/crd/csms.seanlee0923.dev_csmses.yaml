@@ -31,10 +31,13 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          CSMS is the Schema for the csms API. It describes a csms-runtime
-          deployment: the Runtime Deployment, Service, ConfigMap and, optionally, a
-          PodDisruptionBudget. The Operator never creates the MySQL, Redis or API
-          key Secrets it references; those remain externally managed.
+          CSMS is the Schema for the csms API. It describes the deployment of an
+          OCPP runtime container: the Runtime Deployment, Service, ConfigMap and,
+          optionally, an Ingress and a PodDisruptionBudget. It is not specific to
+          this repository's reference cmd/csms-server image — any container that
+          honors the Port/LivenessPath/ReadinessPath contract can be deployed. The
+          Operator never creates the Secrets it references; those remain
+          externally managed.
         properties:
           apiVersion:
             description: |-
@@ -54,66 +57,39 @@ spec:
           metadata:
             type: object
           spec:
-            description: CSMSSpec defines the desired state of a CSMS Runtime deployment.
+            description: |-
+              CSMSSpec defines the desired state of an OCPP runtime deployment. The
+              Operator treats the container at Image as opaque: any runtime built on
+              the ocpp library that listens on Port and serves LivenessPath/
+              ReadinessPath can be deployed, not just this repository's reference
+              cmd/csms-server.
             properties:
               apiSecretName:
                 default: ""
                 description: |-
-                  APISecretName references an existing Secret providing CSMS_API_KEY
-                  and/or CSMS_API_KEYS. The Operator does not create this Secret. Leave
-                  empty to keep the command API disabled.
+                  APISecretName references an existing Secret injected into the
+                  Runtime container via envFrom. The Operator does not create this
+                  Secret and does not inspect its keys. Leave empty to omit it.
                 type: string
               config:
-                description: Config holds Runtime environment variable overrides.
-                properties:
-                  commandRateLimit:
-                    default: 60
-                    description: |-
-                      CommandRateLimit is the per-credential command API requests per minute
-                      (CSMS_COMMAND_RATE_LIMIT).
-                    format: int32
-                    type: integer
-                  heartbeatIntervalSeconds:
-                    default: 300
-                    description: |-
-                      HeartbeatIntervalSeconds is the BootNotification interval in seconds
-                      (CSMS_HEARTBEAT_INTERVAL).
-                    format: int32
-                    type: integer
-                  logLevel:
-                    default: info
-                    description: 'LogLevel is the CSMS_LOG_LEVEL value: debug, info,
-                      warn or error.'
-                    type: string
-                  sessionLeaseTTL:
-                    default: 30s
-                    description: |-
-                      SessionLeaseTTL is the Redis session ownership TTL
-                      (CSMS_SESSION_LEASE_TTL), for example "30s".
-                    type: string
-                  sessionRenewInterval:
-                    default: 10s
-                    description: |-
-                      SessionRenewInterval is the session ownership renew period
-                      (CSMS_SESSION_RENEW_INTERVAL). Must be shorter than SessionLeaseTTL.
-                    type: string
-                  shutdownTimeout:
-                    default: 30s
-                    description: |-
-                      ShutdownTimeout is the graceful shutdown timeout (CSMS_SHUTDOWN_TIMEOUT),
-                      for example "30s".
-                    type: string
+                additionalProperties:
+                  type: string
+                description: |-
+                  Config holds arbitrary environment variables applied through the
+                  ConfigMap the Operator manages. Keys and values are opaque to the
+                  Operator — it makes no assumption about which env vars any given
+                  runtime image reads.
                 type: object
               databaseSecretName:
                 default: ""
                 description: |-
-                  DatabaseSecretName references an existing Secret providing
-                  CSMS_MYSQL_DSN. The Operator does not create this Secret. Leave empty
-                  to run without MySQL persistence.
+                  DatabaseSecretName references an existing Secret injected into the
+                  Runtime container via envFrom. The Operator does not create this
+                  Secret and does not inspect its keys. Leave empty to omit it.
                 type: string
               image:
                 description: |-
-                  Image is the csms-runtime container image, for example
+                  Image is the OCPP runtime container image, for example
                   "csms-runtime:0.1.0".
                 minLength: 1
                 type: string
@@ -153,6 +129,13 @@ spec:
                 required:
                 - host
                 type: object
+              livenessPath:
+                default: /livez
+                description: |-
+                  LivenessPath is the HTTP path the Runtime serves for its liveness
+                  probe.
+                pattern: ^/
+                type: string
               minAvailable:
                 anyOf:
                 - type: integer
@@ -161,12 +144,29 @@ spec:
                   MinAvailable configures a PodDisruptionBudget for the Runtime
                   Deployment. Leave unset to skip creating a PodDisruptionBudget.
                 x-kubernetes-int-or-string: true
+              port:
+                default: 8080
+                description: |-
+                  Port is the container port the Runtime listens on for HTTP traffic,
+                  used for the Service target port and the liveness/readiness probes.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              readinessPath:
+                default: /readyz
+                description: |-
+                  ReadinessPath is the HTTP path the Runtime serves for its readiness
+                  probe.
+                pattern: ^/
+                type: string
               redisSecretName:
                 default: ""
                 description: |-
-                  RedisSecretName references an existing Secret providing
-                  CSMS_REDIS_URL. The Operator does not create this Secret. Leave empty
-                  to disable distributed session ownership; Replicas must then be 1.
+                  RedisSecretName references an existing Secret injected into the
+                  Runtime container via envFrom. The Operator does not create this
+                  Secret and does not inspect its keys. Leave empty to disable
+                  distributed session ownership; Replicas must then be 1.
                 type: string
               replicas:
                 default: 1
@@ -234,13 +234,22 @@ spec:
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
                 type: object
+              terminationGracePeriodSeconds:
+                default: 30
+                description: |-
+                  TerminationGracePeriodSeconds bounds how long Kubernetes waits after
+                  SIGTERM before killing the Runtime Pod, giving it time to drain
+                  in-flight OCPP sessions and command handling on shutdown.
+                format: int64
+                minimum: 0
+                type: integer
             required:
             - image
             type: object
             x-kubernetes-validations:
             - message: 'redisSecretName is required when replicas is greater than
-                1: Runtime session state is process-local without distributed session
-                ownership'
+                1: a Runtime with process-local session state cannot safely run more
+                than one replica without distributed session ownership'
               rule: '!(self.replicas > 1) || size(self.redisSecretName) > 0'
           status:
             description: CSMSStatus reflects the observed state of a CSMS Runtime

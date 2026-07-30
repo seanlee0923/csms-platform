@@ -60,6 +60,7 @@ func TestReconcileCreatesRuntimeResources(t *testing.T) {
 		Spec: csmsv1alpha1.CSMSSpec{
 			Image:              "csms-runtime:0.1.0",
 			DatabaseSecretName: "csms-runtime-database",
+			Config:             map[string]string{"SOME_OTHER_RUNTIMES_VAR": "whatever-it-wants"},
 		},
 	}
 	r, c := newReconciler(t, csms)
@@ -70,12 +71,15 @@ func TestReconcileCreatesRuntimeResources(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
+	// The Operator must not assume any particular runtime's env var names:
+	// it only passes spec.config through verbatim, with nothing injected
+	// or defaulted on top.
 	var cm corev1.ConfigMap
 	if err := c.Get(ctx, req.NamespacedName, &cm); err != nil {
 		t.Fatalf("get configmap: %v", err)
 	}
-	if cm.Data["CSMS_LOG_LEVEL"] != "info" || cm.Data["CSMS_HEARTBEAT_INTERVAL"] != "300" {
-		t.Errorf("unexpected configmap defaults: %+v", cm.Data)
+	if len(cm.Data) != 1 || cm.Data["SOME_OTHER_RUNTIMES_VAR"] != "whatever-it-wants" {
+		t.Errorf("expected configmap to be a verbatim passthrough of spec.config, got %+v", cm.Data)
 	}
 
 	var svc corev1.Service
@@ -93,10 +97,22 @@ func TestReconcileCreatesRuntimeResources(t *testing.T) {
 	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 1 {
 		t.Errorf("expected default replicas 1, got %v", deploy.Spec.Replicas)
 	}
+	if deploy.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *deploy.Spec.Template.Spec.TerminationGracePeriodSeconds != 30 {
+		t.Errorf("expected default terminationGracePeriodSeconds 30, got %v", deploy.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	}
 
 	container := deploy.Spec.Template.Spec.Containers[0]
 	if container.Image != "csms-runtime:0.1.0" {
 		t.Errorf("unexpected image %q", container.Image)
+	}
+	if len(container.Ports) != 1 || container.Ports[0].ContainerPort != 8080 {
+		t.Errorf("expected default container port 8080, got %+v", container.Ports)
+	}
+	if container.ReadinessProbe.HTTPGet.Path != "/readyz" {
+		t.Errorf("expected default readiness path /readyz, got %q", container.ReadinessProbe.HTTPGet.Path)
+	}
+	if container.LivenessProbe.HTTPGet.Path != "/livez" {
+		t.Errorf("expected default liveness path /livez, got %q", container.LivenessProbe.HTTPGet.Path)
 	}
 
 	foundDBSecret := false
@@ -132,6 +148,53 @@ func TestReconcileCreatesRuntimeResources(t *testing.T) {
 	available := meta.FindStatusCondition(got.Status.Conditions, csmsv1alpha1.CSMSConditionAvailable)
 	if available == nil || available.Status != metav1.ConditionFalse {
 		t.Errorf("expected Available=False before any replica is ready, got %+v", available)
+	}
+}
+
+func TestReconcileHonorsCustomPortProbePathsAndTerminationGrace(t *testing.T) {
+	grace := int64(45)
+	csms := &csmsv1alpha1.CSMS{
+		ObjectMeta: metav1.ObjectMeta{Name: "csms-runtime", Namespace: "default"},
+		Spec: csmsv1alpha1.CSMSSpec{
+			Image:                         "some-other-ocpp-runtime:1.0.0",
+			Port:                          9000,
+			LivenessPath:                  "/healthz",
+			ReadinessPath:                 "/ready",
+			TerminationGracePeriodSeconds: &grace,
+		},
+	}
+	r, c := newReconciler(t, csms)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "csms-runtime", Namespace: "default"}}
+	ctx := context.Background()
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var svc corev1.Service
+	if err := c.Get(ctx, req.NamespacedName, &svc); err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 9000 {
+		t.Errorf("expected service port 9000, got %+v", svc.Spec.Ports)
+	}
+
+	var deploy appsv1.Deployment
+	if err := c.Get(ctx, req.NamespacedName, &deploy); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if deploy.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *deploy.Spec.Template.Spec.TerminationGracePeriodSeconds != 45 {
+		t.Errorf("expected terminationGracePeriodSeconds 45, got %v", deploy.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	}
+	container := deploy.Spec.Template.Spec.Containers[0]
+	if len(container.Ports) != 1 || container.Ports[0].ContainerPort != 9000 {
+		t.Errorf("expected container port 9000, got %+v", container.Ports)
+	}
+	if container.ReadinessProbe.HTTPGet.Path != "/ready" {
+		t.Errorf("expected readiness path /ready, got %q", container.ReadinessProbe.HTTPGet.Path)
+	}
+	if container.LivenessProbe.HTTPGet.Path != "/healthz" {
+		t.Errorf("expected liveness path /healthz, got %q", container.LivenessProbe.HTTPGet.Path)
 	}
 }
 

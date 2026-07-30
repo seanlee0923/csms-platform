@@ -1,12 +1,12 @@
-// Package controller reconciles CSMS resources into a csms-runtime
-// Deployment, Service, ConfigMap and, optionally, a PodDisruptionBudget.
+// Package controller reconciles CSMS resources into a Deployment, Service,
+// ConfigMap and, optionally, an Ingress and a PodDisruptionBudget for an
+// OCPP runtime container. It has no knowledge of any particular runtime's
+// business logic or environment variables — see CSMSSpec's doc comment.
 package controller
 
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,12 +30,10 @@ const (
 	labelInstance = "app.kubernetes.io/instance"
 	componentName = "csms-runtime"
 
-	defaultLogLevel        = "info"
-	defaultHeartbeat       = int32(300)
-	defaultShutdownTimeout = "30s"
-	defaultRateLimit       = int32(60)
-	defaultLeaseTTL        = "30s"
-	defaultRenewInterval   = "10s"
+	defaultPort                          = int32(8080)
+	defaultLivenessPath                  = "/livez"
+	defaultReadinessPath                 = "/readyz"
+	defaultTerminationGracePeriodSeconds = int64(30)
 )
 
 // CSMSReconciler reconciles a CSMS object.
@@ -103,44 +101,47 @@ func (r *CSMSReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return ctrl.Result{}, nil
 }
 
+// reconcileConfigMap writes csms.Spec.Config verbatim into the ConfigMap.
+// The Operator does not interpret or default any of these keys — it has no
+// way to know which environment variables the Image at hand reads.
 func (r *CSMSReconciler) reconcileConfigMap(ctx context.Context, csms *csmsv1alpha1.CSMS, labels map[string]string) error {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: csms.Name, Namespace: csms.Namespace},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = labels
-		cm.Data = runtimeConfigData(csms.Spec.Config)
+		cm.Data = csms.Spec.Config
 		return controllerutil.SetControllerReference(csms, cm, r.Scheme)
 	})
 	return err
 }
 
-func runtimeConfigData(cfg csmsv1alpha1.CSMSConfig) map[string]string {
-	heartbeat := defaultHeartbeat
-	if cfg.HeartbeatIntervalSeconds != nil {
-		heartbeat = *cfg.HeartbeatIntervalSeconds
+func httpPort(csms *csmsv1alpha1.CSMS) int32 {
+	if csms.Spec.Port != 0 {
+		return csms.Spec.Port
 	}
-	rateLimit := defaultRateLimit
-	if cfg.CommandRateLimit != nil {
-		rateLimit = *cfg.CommandRateLimit
-	}
-
-	return map[string]string{
-		"CSMS_HTTP_ADDR":              ":8080",
-		"CSMS_HEARTBEAT_INTERVAL":     strconv.Itoa(int(heartbeat)),
-		"CSMS_SHUTDOWN_TIMEOUT":       stringOrDefault(cfg.ShutdownTimeout, defaultShutdownTimeout),
-		"CSMS_LOG_LEVEL":              stringOrDefault(cfg.LogLevel, defaultLogLevel),
-		"CSMS_SESSION_LEASE_TTL":      stringOrDefault(cfg.SessionLeaseTTL, defaultLeaseTTL),
-		"CSMS_SESSION_RENEW_INTERVAL": stringOrDefault(cfg.SessionRenewInterval, defaultRenewInterval),
-		"CSMS_COMMAND_RATE_LIMIT":     strconv.Itoa(int(rateLimit)),
-	}
+	return defaultPort
 }
 
-func stringOrDefault(value, fallback string) string {
-	if value == "" {
-		return fallback
+func livenessPath(csms *csmsv1alpha1.CSMS) string {
+	if csms.Spec.LivenessPath != "" {
+		return csms.Spec.LivenessPath
 	}
-	return value
+	return defaultLivenessPath
+}
+
+func readinessPath(csms *csmsv1alpha1.CSMS) string {
+	if csms.Spec.ReadinessPath != "" {
+		return csms.Spec.ReadinessPath
+	}
+	return defaultReadinessPath
+}
+
+func terminationGracePeriodSeconds(csms *csmsv1alpha1.CSMS) int64 {
+	if csms.Spec.TerminationGracePeriodSeconds != nil {
+		return *csms.Spec.TerminationGracePeriodSeconds
+	}
+	return defaultTerminationGracePeriodSeconds
 }
 
 func (r *CSMSReconciler) reconcileService(ctx context.Context, csms *csmsv1alpha1.CSMS, labels map[string]string) error {
@@ -151,7 +152,7 @@ func (r *CSMSReconciler) reconcileService(ctx context.Context, csms *csmsv1alpha
 		svc.Labels = labels
 		svc.Spec.Selector = labels
 		svc.Spec.Ports = []corev1.ServicePort{
-			{Name: "http", Port: 8080, TargetPort: intstr.FromString("http")},
+			{Name: "http", Port: httpPort(csms), TargetPort: intstr.FromString("http")},
 		}
 		return controllerutil.SetControllerReference(csms, svc, r.Scheme)
 	})
@@ -194,10 +195,8 @@ func (r *CSMSReconciler) reconcileDeployment(ctx context.Context, csms *csmsv1al
 		})
 	}
 
-	terminationGrace := int64(40)
-	if d, err := time.ParseDuration(csms.Spec.Config.ShutdownTimeout); err == nil {
-		terminationGrace = int64(d.Seconds()) + 10
-	}
+	terminationGrace := terminationGracePeriodSeconds(csms)
+	port := httpPort(csms)
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: csms.Name, Namespace: csms.Namespace},
@@ -226,17 +225,17 @@ func (r *CSMSReconciler) reconcileDeployment(ctx context.Context, csms *csmsv1al
 							},
 						},
 						Ports: []corev1.ContainerPort{
-							{Name: "http", ContainerPort: 8080},
+							{Name: "http", ContainerPort: port},
 						},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromString("http")},
+								HTTPGet: &corev1.HTTPGetAction{Path: readinessPath(csms), Port: intstr.FromString("http")},
 							},
 							PeriodSeconds: 5,
 						},
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{Path: "/livez", Port: intstr.FromString("http")},
+								HTTPGet: &corev1.HTTPGetAction{Path: livenessPath(csms), Port: intstr.FromString("http")},
 							},
 							PeriodSeconds: 10,
 						},

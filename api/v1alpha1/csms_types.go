@@ -6,49 +6,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// CSMSConfig holds csms-runtime environment variable overrides applied
-// through the ConfigMap the Operator manages.
-type CSMSConfig struct {
-	// LogLevel is the CSMS_LOG_LEVEL value: debug, info, warn or error.
-	// +optional
-	// +kubebuilder:default="info"
-	LogLevel string `json:"logLevel,omitempty"`
-
-	// HeartbeatIntervalSeconds is the BootNotification interval in seconds
-	// (CSMS_HEARTBEAT_INTERVAL).
-	// +optional
-	// +kubebuilder:default=300
-	HeartbeatIntervalSeconds *int32 `json:"heartbeatIntervalSeconds,omitempty"`
-
-	// ShutdownTimeout is the graceful shutdown timeout (CSMS_SHUTDOWN_TIMEOUT),
-	// for example "30s".
-	// +optional
-	// +kubebuilder:default="30s"
-	ShutdownTimeout string `json:"shutdownTimeout,omitempty"`
-
-	// CommandRateLimit is the per-credential command API requests per minute
-	// (CSMS_COMMAND_RATE_LIMIT).
-	// +optional
-	// +kubebuilder:default=60
-	CommandRateLimit *int32 `json:"commandRateLimit,omitempty"`
-
-	// SessionLeaseTTL is the Redis session ownership TTL
-	// (CSMS_SESSION_LEASE_TTL), for example "30s".
-	// +optional
-	// +kubebuilder:default="30s"
-	SessionLeaseTTL string `json:"sessionLeaseTTL,omitempty"`
-
-	// SessionRenewInterval is the session ownership renew period
-	// (CSMS_SESSION_RENEW_INTERVAL). Must be shorter than SessionLeaseTTL.
-	// +optional
-	// +kubebuilder:default="10s"
-	SessionRenewInterval string `json:"sessionRenewInterval,omitempty"`
-}
-
-// CSMSSpec defines the desired state of a CSMS Runtime deployment.
-// +kubebuilder:validation:XValidation:rule="!(self.replicas > 1) || size(self.redisSecretName) > 0",message="redisSecretName is required when replicas is greater than 1: Runtime session state is process-local without distributed session ownership"
+// CSMSSpec defines the desired state of an OCPP runtime deployment. The
+// Operator treats the container at Image as opaque: any runtime built on
+// the ocpp library that listens on Port and serves LivenessPath/
+// ReadinessPath can be deployed, not just this repository's reference
+// cmd/csms-server.
+// +kubebuilder:validation:XValidation:rule="!(self.replicas > 1) || size(self.redisSecretName) > 0",message="redisSecretName is required when replicas is greater than 1: a Runtime with process-local session state cannot safely run more than one replica without distributed session ownership"
 type CSMSSpec struct {
-	// Image is the csms-runtime container image, for example
+	// Image is the OCPP runtime container image, for example
 	// "csms-runtime:0.1.0".
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
@@ -59,30 +24,64 @@ type CSMSSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// DatabaseSecretName references an existing Secret providing
-	// CSMS_MYSQL_DSN. The Operator does not create this Secret. Leave empty
-	// to run without MySQL persistence.
+	// Port is the container port the Runtime listens on for HTTP traffic,
+	// used for the Service target port and the liveness/readiness probes.
+	// +optional
+	// +kubebuilder:default=8080
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+
+	// LivenessPath is the HTTP path the Runtime serves for its liveness
+	// probe.
+	// +optional
+	// +kubebuilder:default="/livez"
+	// +kubebuilder:validation:Pattern="^/"
+	LivenessPath string `json:"livenessPath,omitempty"`
+
+	// ReadinessPath is the HTTP path the Runtime serves for its readiness
+	// probe.
+	// +optional
+	// +kubebuilder:default="/readyz"
+	// +kubebuilder:validation:Pattern="^/"
+	ReadinessPath string `json:"readinessPath,omitempty"`
+
+	// TerminationGracePeriodSeconds bounds how long Kubernetes waits after
+	// SIGTERM before killing the Runtime Pod, giving it time to drain
+	// in-flight OCPP sessions and command handling on shutdown.
+	// +optional
+	// +kubebuilder:default=30
+	// +kubebuilder:validation:Minimum=0
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+
+	// DatabaseSecretName references an existing Secret injected into the
+	// Runtime container via envFrom. The Operator does not create this
+	// Secret and does not inspect its keys. Leave empty to omit it.
 	// +optional
 	// +kubebuilder:default=""
 	DatabaseSecretName string `json:"databaseSecretName,omitempty"`
 
-	// RedisSecretName references an existing Secret providing
-	// CSMS_REDIS_URL. The Operator does not create this Secret. Leave empty
-	// to disable distributed session ownership; Replicas must then be 1.
+	// RedisSecretName references an existing Secret injected into the
+	// Runtime container via envFrom. The Operator does not create this
+	// Secret and does not inspect its keys. Leave empty to disable
+	// distributed session ownership; Replicas must then be 1.
 	// +optional
 	// +kubebuilder:default=""
 	RedisSecretName string `json:"redisSecretName,omitempty"`
 
-	// APISecretName references an existing Secret providing CSMS_API_KEY
-	// and/or CSMS_API_KEYS. The Operator does not create this Secret. Leave
-	// empty to keep the command API disabled.
+	// APISecretName references an existing Secret injected into the
+	// Runtime container via envFrom. The Operator does not create this
+	// Secret and does not inspect its keys. Leave empty to omit it.
 	// +optional
 	// +kubebuilder:default=""
 	APISecretName string `json:"apiSecretName,omitempty"`
 
-	// Config holds Runtime environment variable overrides.
+	// Config holds arbitrary environment variables applied through the
+	// ConfigMap the Operator manages. Keys and values are opaque to the
+	// Operator — it makes no assumption about which env vars any given
+	// runtime image reads.
 	// +optional
-	Config CSMSConfig `json:"config,omitempty"`
+	Config map[string]string `json:"config,omitempty"`
 
 	// Resources sets the Runtime container resource requests and limits.
 	// +optional
@@ -172,10 +171,13 @@ type CSMSStatus struct {
 // +kubebuilder:printcolumn:name="Ready",type=integer,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// CSMS is the Schema for the csms API. It describes a csms-runtime
-// deployment: the Runtime Deployment, Service, ConfigMap and, optionally, a
-// PodDisruptionBudget. The Operator never creates the MySQL, Redis or API
-// key Secrets it references; those remain externally managed.
+// CSMS is the Schema for the csms API. It describes the deployment of an
+// OCPP runtime container: the Runtime Deployment, Service, ConfigMap and,
+// optionally, an Ingress and a PodDisruptionBudget. It is not specific to
+// this repository's reference cmd/csms-server image — any container that
+// honors the Port/LivenessPath/ReadinessPath contract can be deployed. The
+// Operator never creates the Secrets it references; those remain
+// externally managed.
 type CSMS struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

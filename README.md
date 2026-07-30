@@ -2,22 +2,34 @@
 
 [![CI](https://github.com/seanlee0923/csms-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/seanlee0923/csms-platform/actions/workflows/ci.yml)
 
-`github.com/seanlee0923/ocpp` 기반의 OCPP 1.6 / 2.0.1 / 2.1 CSMS(Charging Station
-Management System) Runtime과, 이를 Kubernetes에서 선언적으로 배포·운영하는
-Operator로 구성된 프로젝트다.
+`github.com/seanlee0923/ocpp` 라이브러리로 만든 OCPP 런타임을 Kubernetes에서
+선언적으로 배포·확장·헬스체크하기 위한 **Operator**와, 그 Operator를 실제로
+검증하는 데 쓰는 **참조용 최소 Runtime**(`cmd/csms-server`)으로 구성된
+프로젝트다.
 
-- **Runtime**: 충전기의 OCPP-J WebSocket 연결을 수용하고, MySQL에 station/connector
-  상태를 영속화하며, Redis 기반 분산 session ownership과 cross-Pod command 전달로
-  수평 확장을 지원한다.
-- **Operator**: `CSMS` custom resource 하나로 Runtime Deployment/Service/ConfigMap/
-  PodDisruptionBudget을 관리한다. MySQL/Redis/API key는 직접 만들지 않고 기존
-  Secret을 참조만 한다.
+- **Operator**: `CSMS` custom resource 하나로 임의의 OCPP 런타임 컨테이너의
+  Deployment/Service/ConfigMap/Ingress/PodDisruptionBudget을 관리한다.
+  Operator는 이미지 내부의 업무 로직(인증, 결제, transaction 등)을 전혀 알지
+  못하며, 그 컨테이너가 `image`/`port`/`livenessPath`/`readinessPath` 계약만
+  지키면 어떤 OCPP 런타임이든 배포 대상이 될 수 있다. MySQL/Redis/API key
+  Secret은 직접 만들지 않고 참조만 한다.
+- **참조 Runtime**(`cmd/csms-server`): OCPP-J WebSocket 연결을 수용하고,
+  MySQL에 station/connector 상태를 영속화하며, Redis 기반 분산 session
+  ownership과 cross-Pod command 전달로 수평 확장을 지원하는 최소 구현이다.
+  BootNotification/Heartbeat/StatusNotification과 Reset command만 처리하며,
+  실제 프로덕션 업무 로직(인증, 결제/과금, 전체 트랜잭션 흐름 등)은 의도적으로
+  포함하지 않는다 — Operator가 어떤 이미지를 배포하든 동작한다는 것을 보여주는
+  참조 구현이자 Operator 자체의 테스트 대상이다.
 
 Runtime과 Operator는 서로 다른 컨테이너 이미지와 RBAC 권한을 갖는다. Runtime Pod에는
 Kubernetes 리소스 변경 권한이 없고, Operator Pod에는 OCPP WebSocket 트래픽이
 전달되지 않는다.
 
 ## 아키텍처
+
+Operator 입장에서 아래 박스는 `image`/`port`/`livenessPath`/`readinessPath`
+계약만 지키는 교체 가능한 컨테이너다. 아래는 이 저장소가 포함하는 참조
+Runtime(`cmd/csms-server`)이 그 계약 안에서 실제로 무엇을 구현했는지 보여준다.
 
 ```text
 Charging Station
@@ -26,7 +38,7 @@ Charging Station
 Ingress / Load Balancer
         │
         ▼
-CSMS Runtime Pods (Deployment, replicas N)
+참조 Runtime Pods (Deployment, replicas N)
         ├── ocpp.csms.Server (session, subprotocol 협상, typed routing)
         ├── BootNotification / Heartbeat / StatusNotification handler
         ├── Reset outbound command dispatcher
@@ -46,7 +58,8 @@ CSMS Runtime Pods (Deployment, replicas N)
 
 Kubernetes Operator (별도 Deployment, 별도 RBAC)
         ├── CSMS CRD watch
-        ├── Deployment/Service/ConfigMap/PodDisruptionBudget reconcile
+        ├── Deployment/Service/ConfigMap/Ingress/PodDisruptionBudget reconcile
+        ├── 위 Runtime 내부 로직(MySQL/Redis/command bus 등)은 알지 못함
         ├── Secret은 참조만 함 (생성/관리 안 함)
         └── CSMS.status(Available/Progressing) 갱신
 ```
@@ -102,6 +115,11 @@ go run ./cmd/csms-server
 | `http://localhost:8080/api/v1/stations/{id}/commands/reset` | 충전기 명령 API (아래 [충전기 명령 API](#충전기-명령-api) 참고) |
 
 ## 설정 (환경 변수)
+
+아래는 이 저장소의 참조 Runtime(`cmd/csms-server`)이 읽는 환경 변수다. Operator는
+이 이름들을 알지 못한다 — 다른 OCPP 런타임을 배포한다면 그 런타임이 실제로 읽는
+env var를 `CSMS.spec.config`에 자유롭게 넣으면 된다(아래
+[Kubernetes — Operator](#kubernetes--operator-권장) 참고).
 
 | 이름 | 기본값 | 설명 |
 | --- | --- | --- |
@@ -162,9 +180,12 @@ Runtime은 Go 1.26.5로 빌드하고 `github.com/seanlee0923/ocpp v0.2.0`을 고
 
 ### Kubernetes — Operator (권장)
 
-`csms-operator`는 `CSMS` custom resource 하나로 csms-runtime Deployment, Service,
-ConfigMap과 선택적 PodDisruptionBudget을 관리한다. Operator는 MySQL, Redis,
-command API Secret을 직접 생성하지 않고 `CSMS.spec`에 지정한 이름의 기존 Secret만
+`csms-operator`는 `CSMS` custom resource 하나로 임의의 OCPP 런타임 컨테이너의
+Deployment, Service, ConfigMap과 선택적 Ingress/PodDisruptionBudget을 관리한다.
+Operator가 실제로 아는 건 `image`와, 그 컨테이너가 응답해야 하는
+`port`/`livenessPath`/`readinessPath` 계약뿐이다 — 그 안에서 무엇을 하는지(어떤
+OCPP Action을 처리하는지, 인증/결제 로직이 있는지)는 전혀 모른다. MySQL, Redis,
+command API Secret도 직접 생성하지 않고 `CSMS.spec`에 지정한 이름의 기존 Secret만
 `optional: true`로 참조한다.
 
 ```sh
@@ -177,19 +198,32 @@ kubectl apply -f config/samples/csms_v1alpha1_csms.yaml
 
 | 필드 | 설명 |
 | --- | --- |
-| `image` | csms-runtime 이미지 |
+| `image` | 배포할 OCPP 런타임 컨테이너 이미지. 이 저장소의 `csms-runtime`일 필요는 없다 |
 | `replicas` | Runtime replica 수, 기본값 1 |
-| `databaseSecretName` | `CSMS_MYSQL_DSN`을 담은 기존 Secret 이름, 선택 |
-| `redisSecretName` | `CSMS_REDIS_URL`을 담은 기존 Secret 이름, 선택 |
-| `apiSecretName` | `CSMS_API_KEY`/`CSMS_API_KEYS`를 담은 기존 Secret 이름, 선택 |
-| `config` | 로그 레벨, heartbeat, shutdown timeout, rate limit, session lease 등 ConfigMap override |
+| `port` | 컨테이너가 HTTP를 서빙하는 포트, 기본값 `8080`. Service와 probe가 이 값을 그대로 사용한다 |
+| `livenessPath` | liveness probe 경로, 기본값 `/livez` |
+| `readinessPath` | readiness probe 경로, 기본값 `/readyz` |
+| `terminationGracePeriodSeconds` | SIGTERM 후 강제 종료까지 대기 시간, 기본값 `30` |
+| `databaseSecretName` | Runtime 컨테이너에 envFrom으로 주입할 기존 Secret 이름, 선택. Operator는 이 Secret의 키를 들여다보지 않는다 |
+| `redisSecretName` | 위와 동일한 방식으로 주입되는 기존 Secret 이름, 선택 |
+| `apiSecretName` | 위와 동일한 방식으로 주입되는 기존 Secret 이름, 선택 |
+| `config` | ConfigMap에 그대로 채워지는 임의의 key-value. Operator는 이 값을 해석하거나 기본값을 채우지 않는다 — 배포하는 런타임이 실제로 읽는 env var를 그대로 넣는다 |
 | `minAvailable` | 설정하면 PodDisruptionBudget 생성, 비우면 생성하지 않음 |
 | `ingress` | 설정하면 Runtime Service를 가리키는 Ingress 생성, 비우면 생성하지 않음(기본값). 아래 [Ingress(선택)](#ingress선택) 참고 |
 
-`redisSecretName` 없이 `replicas`를 1보다 크게 설정하는 조합은 Runtime의 세션
-상태가 프로세스 로컬이라는 제약과 맞지 않는다. CRD의 CEL validation이 apiserver
+`redisSecretName` 없이 `replicas`를 1보다 크게 설정하는 조합은 세션 상태가
+프로세스 로컬인 Runtime에서는 안전하지 않다(분산 session ownership 없이는 어느
+Pod가 어떤 station을 갖고 있는지 알 수 없다). CRD의 CEL validation이 apiserver
 단에서 이 조합을 거부한다(`redisSecretName is required when replicas is greater
-than 1: ...`).
+than 1: ...`). 이 검증은 순전히 replica 개수 관점의 안전장치이며, 배포하는
+런타임이 실제로 Redis 기반 분산 세션을 구현했는지는 Operator가 확인할 수
+없다 — 세션을 process-local로만 유지하는 런타임이라면 `replicas`는 1로 둔다.
+
+이 저장소의 참조 Runtime(`csms-runtime`)은 위 계약을 다음처럼 구현한다: 포트
+`8080`, `/livez`·`/readyz`, `CSMS_MYSQL_DSN`/`CSMS_REDIS_URL`/`CSMS_API_KEY(S)`
+env var(위 [설정 (환경 변수)](#설정-환경-변수) 참고), Pod 이름을 담은
+`CSMS_INSTANCE_ID`. 다른 런타임을 배포한다면 이 이름들을 그대로 따를 필요는
+없고, `config`/Secret에 그 런타임이 실제로 읽는 값을 넣으면 된다.
 
 #### Ingress(선택)
 
