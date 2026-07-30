@@ -126,8 +126,8 @@ func TestRuntimeTerminatesTLSAndEnforcesMutualTLS(t *testing.T) {
 	if server.tlsConfig == nil {
 		t.Fatal("expected TLS to activate when cert/key/CA files are present")
 	}
-	if server.tlsConfig.ClientAuth != tls.RequireAndVerifyClientCert {
-		t.Fatalf("expected mutual TLS to be required, got ClientAuth=%v", server.tlsConfig.ClientAuth)
+	if server.tlsConfig.ClientAuth != tls.VerifyClientCertIfGiven {
+		t.Fatalf("expected mutual TLS mode (verify-if-given), got ClientAuth=%v", server.tlsConfig.ClientAuth)
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -160,15 +160,40 @@ func TestRuntimeTerminatesTLSAndEnforcesMutualTLS(t *testing.T) {
 		}
 	}
 
-	// TLS handshake without presenting any client certificate must fail —
-	// enforced by tls.RequireAndVerifyClientCert itself, before any HTTP
-	// request is processed.
+	// A TLS handshake without any client certificate must still succeed —
+	// requiring one at the handshake layer (tls.RequireAndVerifyClientCert)
+	// would also block kubelet's own liveness/readiness probes, which never
+	// present a client certificate, and crash-loop the Pod. /readyz must
+	// stay reachable with no client certificate at all.
 	noCertClient := &http.Client{
 		Timeout:   time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: rootPool}},
 	}
-	if _, err := noCertClient.Get("https://" + addr + "/readyz"); err == nil {
-		t.Fatal("expected TLS handshake without a client certificate to fail")
+	noCertResp, err := noCertClient.Get("https://" + addr + "/readyz")
+	if err != nil {
+		t.Fatalf("expected /readyz to be reachable without a client certificate (kubelet probes never send one), got: %v", err)
+	}
+	noCertResp.Body.Close()
+	if noCertResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected /readyz 200 without a client certificate, got %d", noCertResp.StatusCode)
+	}
+
+	// But the OCPP WebSocket upgrade path must reject a connection with no
+	// client certificate at all — enforced by
+	// SecurityProfileTLSClientCertificate inside the ocpp library.
+	noCertDialer := websocket.Dialer{
+		Subprotocols:     []string{"ocpp1.6"},
+		TLSClientConfig:  &tls.Config{RootCAs: rootPool},
+		HandshakeTimeout: time.Second,
+	}
+	if _, resp, err := noCertDialer.Dial("wss://"+addr+"/station-without-a-cert", nil); err == nil {
+		t.Fatal("expected WebSocket upgrade with no client certificate at all to fail")
+	} else if resp == nil || resp.StatusCode != http.StatusForbidden {
+		status := -1
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("expected 403 for a missing client certificate, got status=%d err=%v", status, err)
 	}
 
 	// A verified client certificate with ANY CN may reach the plain HTTP

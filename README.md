@@ -381,15 +381,20 @@ spec:
   자동으로 TLS를 활성화한다 — 별도의 on/off 플래그는 없다. 파일이 없으면
   그냥 평문 HTTP로 기존과 동일하게 동작한다(하위 호환).
 - `/etc/csms/tls/ca/ca.crt`(`CSMS_TLS_CLIENT_CA_FILE`)가 추가로 존재하면
-  mutual TLS를 요구한다 — client 인증서가 없으면 TLS handshake 자체가
-  실패한다.
-- mTLS일 때 `ocpp` 라이브러리의 `Security.Profile =
-  SecurityProfileTLSClientCertificate`와 `Authenticator`를 사용해, TLS
-  handshake에서 검증된 client 인증서의 CN이 URL 경로의 station identity와
-  일치하는지 OCPP WebSocket upgrade 시점에 한 번 더 확인한다. CN이 다르면
-  403으로 거부된다. `/livez`·`/readyz`·`/metrics`는 OCPP upgrade 경로가
-  아니라서 이 CN 대조는 적용되지 않고, CA로 서명된 유효한 client 인증서면
-  통과한다.
+  mutual TLS 모드로 전환한다. TLS handshake 자체는 client 인증서 없이도
+  성공한다(`tls.VerifyClientCertIfGiven`) — kubelet의 liveness/readiness
+  probe는 client 인증서를 절대 보내지 않으므로, handshake 단계에서
+  인증서를 강제하면(`RequireAndVerifyClientCert`) probe가 영원히 실패해
+  Pod가 crash-loop에 빠진다(실제 원격 배포에서 이 문제를 겪고 나서
+  고쳤다 — 아래 참고).
+- 대신 `ocpp` 라이브러리의 `Security.Profile =
+  SecurityProfileTLSClientCertificate`가 OCPP WebSocket upgrade
+  시점에서 인증서 자체가 없으면 403으로 거부하고, `Authenticator`가
+  제출된 인증서의 CN이 URL 경로의 station identity와 일치하는지 한 번 더
+  확인해 불일치 시 마찬가지로 403을 반환한다. `/livez`·`/readyz`·
+  `/metrics`는 OCPP upgrade 경로를 타지 않아 이 검사 자체가 적용되지
+  않으므로, client 인증서 없이도(또는 CA로 서명됐다면 어떤 CN이든) 정상
+  응답한다 — kubelet probe가 계속 통과하는 이유다.
 - 인증서/키 중 하나만 있고 다른 하나가 없으면(예: 마운트 실수) 시작 시
   바로 에러를 내고 종료한다 — 조용히 평문으로 fallback하지 않는다.
 

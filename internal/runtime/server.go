@@ -72,7 +72,14 @@ func buildTLSConfig(config Config) (*tls.Config, error) {
 			return nil, fmt.Errorf("no valid certificates found in TLS client CA file %s", config.TLSClientCAFile)
 		}
 		tlsConfig.ClientCAs = pool
-		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		// VerifyClientCertIfGiven, not RequireAndVerifyClientCert: kubelet's
+		// HTTPGet liveness/readiness probes never present a client
+		// certificate, so requiring one at the TLS handshake layer would
+		// permanently fail health checks and crash-loop the Pod. A verified
+		// certificate is still required to reach the OCPP path — see the
+		// Authenticator wired into ocppConfig.Security below, which runs
+		// only for the OCPP WebSocket upgrade, not for /livez/readyz/metrics.
+		tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
 	}
 	return tlsConfig, nil
 }
@@ -207,12 +214,14 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		ocppConfig.OnConnect = ownership.onConnect
 		ocppConfig.OnDisconnect = ownership.onDisconnect
 	}
-	if tlsConfig != nil && tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert {
-		// A verified client certificate is already required at the TLS
-		// handshake layer (tls.RequireAndVerifyClientCert); this
-		// Authenticator adds the OCPP-level check that the certificate
-		// actually belongs to the station connecting under this identity,
-		// not just any station trusted by the CA.
+	if tlsConfig != nil && tlsConfig.ClientAuth == tls.VerifyClientCertIfGiven {
+		// The TLS layer verifies a client certificate if one is presented
+		// but does not require it (see buildTLSConfig), so
+		// SecurityProfileTLSClientCertificate is what actually rejects an
+		// OCPP WebSocket upgrade with no certificate at all; this
+		// Authenticator adds the further check that a presented
+		// certificate actually belongs to the station connecting under
+		// this identity, not just any station trusted by the CA.
 		ocppConfig.Security = csms.SecurityConfig{
 			Profile:       csms.SecurityProfileTLSClientCertificate,
 			MinTLSVersion: tls.VersionTLS12,
@@ -254,7 +263,7 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		http: &http.Server{Addr: config.HTTPAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second, TLSConfig: tlsConfig},
 	}
 	if tlsConfig != nil {
-		logger.Info("TLS enabled", "mutual_tls", tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert)
+		logger.Info("TLS enabled", "mutual_tls", tlsConfig.ClientAuth == tls.VerifyClientCertIfGiven)
 	}
 	server.shutdownOCPP = server.ocpp.Shutdown
 	server.shutdownHTTP = server.http.Shutdown
