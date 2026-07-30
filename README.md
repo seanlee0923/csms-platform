@@ -25,6 +25,9 @@ Runtime과 Operator는 서로 다른 컨테이너 이미지와 RBAC 권한을 �
 Kubernetes 리소스 변경 권한이 없고, Operator Pod에는 OCPP WebSocket 트래픽이
 전달되지 않는다.
 
+**직접 만든 OCPP 런타임을 배포하려면** 아래
+[직접 만든 OCPP 런타임 배포하기](#직접-만든-ocpp-런타임-배포하기)를 참고한다.
+
 ## 아키텍처
 
 Operator 입장에서 아래 박스는 `image`/`port`/`livenessPath`/`readinessPath`
@@ -224,6 +227,65 @@ than 1: ...`). 이 검증은 순전히 replica 개수 관점의 안전장치이�
 env var(위 [설정 (환경 변수)](#설정-환경-변수) 참고), Pod 이름을 담은
 `CSMS_INSTANCE_ID`. 다른 런타임을 배포한다면 이 이름들을 그대로 따를 필요는
 없고, `config`/Secret에 그 런타임이 실제로 읽는 값을 넣으면 된다.
+
+#### 직접 만든 OCPP 런타임 배포하기
+
+이 저장소의 `csms-runtime`은 예시일 뿐, 실제로는 `github.com/seanlee0923/ocpp`
+라이브러리로 직접 만든 어떤 런타임이든 이 Operator로 배포할 수 있다. 아래
+계약만 지키면 된다.
+
+1. **HTTP 포트 하나에서 응답한다** (`spec.port`, 기본 `8080`). Service와
+   probe가 이 포트를 그대로 쓴다.
+2. **liveness 경로**(`spec.livenessPath`, 기본 `/livez`)에서 프로세스가
+   살아있으면 2xx를 반환한다.
+3. **readiness 경로**(`spec.readinessPath`, 기본 `/readyz`)에서 트래픽을
+   받을 준비가 됐으면 2xx, 아니면 5xx나 연결 거부를 반환한다. 이 값이 false가
+   되면 Kubernetes가 Service Endpoint에서 해당 Pod를 자동으로 뺀다.
+4. **SIGTERM을 받으면 `terminationGracePeriodSeconds`(기본 `30`초) 안에**
+   진행 중인 OCPP 연결/명령을 정리하고 종료한다. 이 시간을 넘기면
+   Kubernetes가 강제 종료(SIGKILL)한다.
+5. **필요한 설정은 자기 마음대로 이름 지은 환경 변수로 읽는다.**
+   `spec.config`(자유 key-value)와 `databaseSecretName`/`redisSecretName`/
+   `apiSecretName`으로 참조한 Secret이 전부 `envFrom`으로 컨테이너에
+   주입되므로, Operator가 아는 이름을 따를 필요가 없다.
+6. **(선택) `CSMS_INSTANCE_ID`** — Operator가 Pod 이름을 자동으로 이 env var에
+   주입해준다. 여러 replica 중 자기 자신이 누구인지 알아야 하는 런타임(예:
+   분산 session ownership 구현)이라면 이 값을 쓰면 된다.
+7. **`replicas`를 2 이상으로 늘리려면 Runtime이 스스로 분산 session
+   ownership을 구현해야 한다.** station의 WebSocket 연결은 항상 하나의 Pod
+   메모리에만 존재하므로, 여러 Pod가 있으면 "이 station은 지금 어느 Pod가
+   갖고 있는가"를 Runtime이 직접 추적해야 한다(Redis 등으로). CRD의 CEL
+   validation은 `redisSecretName`이 있는지만 확인할 뿐, 그 Secret을 실제로
+   써서 분산 세션을 구현했는지는 검증할 수 없다 — 검증은 못 하지만 요구사항
+   자체는 실재한다.
+
+**절차:**
+
+1. `github.com/seanlee0923/ocpp`로 필요한 OCPP Action의 handler를 등록한다
+   (BootNotification, Authorize, StartTransaction, MeterValues 등 실제
+   업무에 필요한 만큼).
+2. 위 1~4번 HTTP 계약을 구현한다.
+3. 인증/결제/과금/DB 등 실제 업무 로직을 붙인다 — 이 부분은 전적으로 직접
+   구현해야 한다. Operator도, 이 저장소의 참조 Runtime도 이 로직을 대신 만들어
+   주지 않는다.
+4. 컨테이너 이미지를 빌드해 registry에 올린다.
+5. `CSMS` 리소스에서 `image`/`port`/`livenessPath`/`readinessPath`와 필요한
+   `config`/Secret 참조를 자신의 런타임에 맞게 지정한다.
+6. `kubectl apply -f`로 배포한다.
+
+**참고할 동작 예시**: 이 저장소의 참조 Runtime이 위 계약을 실제로 구현한
+코드다.
+
+| 계약 항목 | 참조 구현 위치 |
+| --- | --- |
+| OCPP handler 등록 | `internal/handlers/core.go`의 `Register()` |
+| liveness/readiness | `internal/runtime/health.go` |
+| graceful shutdown | `internal/runtime/server.go`의 `serve()` |
+| 분산 session ownership(멀티 replica) | `internal/sessionregistry`, `internal/commandbus` |
+
+같은 패턴을 따라 만들되, `internal/handlers`/`internal/stationstore` 자리에
+실제 필요한 업무 로직(인증, 결제, transaction 등)을 채워 넣으면 된다 — 이
+저장소는 그 부분을 대신 구현해주지 않는다.
 
 #### Ingress(선택)
 
