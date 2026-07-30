@@ -131,6 +131,8 @@ env var를 `CSMS.spec.config`에 자유롭게 넣으면 된다(아래
 | `CSMS_SHUTDOWN_TIMEOUT` | `30s` | graceful shutdown 최대 대기 시간 |
 | `CSMS_LOG_LEVEL` | `info` | JSON 로그 레벨: `debug`, `info`, `warn`, `error` |
 | `CSMS_MYSQL_DSN` | 비어 있음 | MySQL DSN. 비어 있으면 in-memory repository 사용 |
+| `CSMS_MYSQL_MAX_OPEN_CONNS` | `25` | Runtime 프로세스당 동시 MySQL 연결 수 상한(replica마다 별도 적용). 재연결 폭주로 쓰기가 몰려도 초과분은 대기하지, 새 연결을 무제한으로 열지 않는다 |
+| `CSMS_HANDSHAKE_RATE_LIMIT` | `30` | 원격 IP별 분당 WebSocket handshake 시도 허용 횟수. 초과분은 즉시 429로 거부되어, 재연결 폭풍이 스스로를 계속 증폭시키는 것을 막는다(`CSMS_COMMAND_RATE_LIMIT`과는 별개 — 그건 충전기 명령 API용) |
 | `CSMS_REDIS_URL` | 비어 있음 | Redis URL. 설정하면 분산 session ownership과 command bus 활성화 |
 | `CSMS_API_KEY` | 비어 있음 | 단일 command API Bearer 키. `CSMS_API_KEYS`가 없을 때 사용 |
 | `CSMS_API_KEYS` | 비어 있음 | 쉼표로 구분한 command API Bearer 키 목록. 무중단 키 교체용 |
@@ -465,6 +467,22 @@ manifest를 적용한다 — Operator가 이미 `csms-runtime` Deployment를 관
   Service, ConfigMap, PodDisruptionBudget이 함께 정리된다.
 - **Operator Pod 자체가 죽어도 leader election으로 복구된다.** 새 Pod가 리더를
   재획득한 뒤 reconcile을 재개한다.
+- **`kubectl rollout restart deployment/csms-runtime`은 Operator가 관리하는
+  Deployment에서 효과가 없다.** Operator의 reconcile이 매 루프마다 Pod
+  template을 통째로 다시 쓰기 때문에, `rollout restart`가 남기는 annotation이
+  곧바로 원복돼 실제로는 아무 Pod도 재생성되지 않는다(직접 실측 확인). Runtime을
+  강제로 재기동하려면 이미지 태그를 바꾸거나(`kubectl patch csms ... image`)
+  Pod를 직접 지운다(`kubectl delete pod -l ...`) — 둘 다 정상적으로 새 Pod를
+  만든다.
+- **재연결 폭풍(reconnect storm)에서도 세션 소유권/커맨드 버스가 무너지지
+  않고, 정상 통과분은 100% 처리된다.** 200개 동시 station을 물려두고 20초마다
+  강제 재연결시키면서 Runtime Pod를 실제로 삭제해 재연결 폭풍을 재현한 결과,
+  IP당 handshake rate limit(`CSMS_HANDSHAKE_RATE_LIMIT`) 덕분에 초과 재연결
+  시도는 OCPP 핸들러에 도달하기 전 429로 즉시 차단되고, 한도 안에서 통과한
+  연결은 BootNotification 실패 없이 전부 정상 처리됐다. rate limit과 MySQL
+  연결 풀 제한(`CSMS_MYSQL_MAX_OPEN_CONNS`)이 없던 이전 버전에서는 같은
+  시나리오에서 재연결이 스스로를 증폭시키며 BootNotification이 대량
+  실패했다 — 실제로 겪고 고친 문제다.
 
 ## 세션 소유권과 명령 전달 모델
 

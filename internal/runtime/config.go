@@ -18,6 +18,27 @@ const (
 	defaultSessionLeaseTTL   = 30 * time.Second
 	defaultSessionRenew      = 10 * time.Second
 
+	// defaultMySQLMaxOpenConns bounds how many concurrent MySQL connections
+	// this Runtime process will open. database/sql defaults to unlimited,
+	// which lets a burst of simultaneous BootNotification/StatusNotification
+	// writes (a reconnect storm after a network blip or a Pod restart) open
+	// far more MySQL connections than the server can actually handle at
+	// once; excess requests then fail outright instead of queuing for a
+	// pooled connection. A bounded pool turns that failure mode into
+	// backpressure instead.
+	defaultMySQLMaxOpenConns    = 25
+	defaultMySQLConnMaxLifetime = 5 * time.Minute
+
+	// defaultHandshakeRateLimit bounds how many WebSocket upgrade attempts
+	// per remote IP per minute the Runtime accepts, using the ocpp
+	// library's built-in HandshakeLimiter. Without it, a reconnect storm
+	// (many stations retrying immediately after any failure, with no
+	// backoff) is self-sustaining: each rejected attempt is immediately
+	// followed by another, keeping downstream stores like MySQL saturated
+	// indefinitely instead of letting them recover. This is independent of
+	// CSMS_COMMAND_RATE_LIMIT, which only governs the outbound command API.
+	defaultHandshakeRateLimit = 30
+
 	// These default paths match the volume mount convention the Operator
 	// uses when CSMS.spec.tls is set (internal/controller's tlsServerMountPath/
 	// tlsCAMountPath). TLS activates automatically if a file exists at
@@ -28,21 +49,23 @@ const (
 )
 
 type Config struct {
-	HTTPAddr          string
-	HeartbeatInterval int
-	ShutdownTimeout   time.Duration
-	Versions          []protocol.Version
-	LogLevel          slog.Level
-	MySQLDSN          string
-	RedisURL          string
-	APIKeys           []string
-	CommandRateLimit  int
-	InstanceID        string
-	SessionLeaseTTL   time.Duration
-	SessionRenew      time.Duration
-	TLSCertFile       string
-	TLSKeyFile        string
-	TLSClientCAFile   string
+	HTTPAddr           string
+	HeartbeatInterval  int
+	ShutdownTimeout    time.Duration
+	Versions           []protocol.Version
+	LogLevel           slog.Level
+	MySQLDSN           string
+	MySQLMaxOpenConns  int
+	HandshakeRateLimit int
+	RedisURL           string
+	APIKeys            []string
+	CommandRateLimit   int
+	InstanceID         string
+	SessionLeaseTTL    time.Duration
+	SessionRenew       time.Duration
+	TLSCertFile        string
+	TLSKeyFile         string
+	TLSClientCAFile    string
 }
 
 func LoadConfig() (Config, error) {
@@ -52,15 +75,17 @@ func LoadConfig() (Config, error) {
 func loadConfig(lookup func(string) (string, bool)) (Config, error) {
 	config := Config{
 		HTTPAddr: defaultHTTPAddr, HeartbeatInterval: defaultHeartbeatInterval,
-		ShutdownTimeout:  defaultShutdownTimeout,
-		Versions:         []protocol.Version{protocol.OCPP16, protocol.OCPP201, protocol.OCPP21},
-		LogLevel:         slog.LevelInfo,
-		SessionLeaseTTL:  defaultSessionLeaseTTL,
-		SessionRenew:     defaultSessionRenew,
-		CommandRateLimit: 60,
-		TLSCertFile:      defaultTLSCertFile,
-		TLSKeyFile:       defaultTLSKeyFile,
-		TLSClientCAFile:  defaultTLSClientCAFile,
+		ShutdownTimeout:    defaultShutdownTimeout,
+		Versions:           []protocol.Version{protocol.OCPP16, protocol.OCPP201, protocol.OCPP21},
+		LogLevel:           slog.LevelInfo,
+		SessionLeaseTTL:    defaultSessionLeaseTTL,
+		SessionRenew:       defaultSessionRenew,
+		CommandRateLimit:   60,
+		MySQLMaxOpenConns:  defaultMySQLMaxOpenConns,
+		HandshakeRateLimit: defaultHandshakeRateLimit,
+		TLSCertFile:        defaultTLSCertFile,
+		TLSKeyFile:         defaultTLSKeyFile,
+		TLSClientCAFile:    defaultTLSClientCAFile,
 	}
 	if value, ok := lookup("CSMS_HTTP_ADDR"); ok {
 		if strings.TrimSpace(value) == "" {
@@ -98,6 +123,20 @@ func loadConfig(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookup("CSMS_MYSQL_DSN"); ok {
 		config.MySQLDSN = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("CSMS_MYSQL_MAX_OPEN_CONNS"); ok {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit <= 0 {
+			return Config{}, fmt.Errorf("CSMS_MYSQL_MAX_OPEN_CONNS must be a positive integer")
+		}
+		config.MySQLMaxOpenConns = limit
+	}
+	if value, ok := lookup("CSMS_HANDSHAKE_RATE_LIMIT"); ok {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit <= 0 {
+			return Config{}, fmt.Errorf("CSMS_HANDSHAKE_RATE_LIMIT must be a positive integer")
+		}
+		config.HandshakeRateLimit = limit
 	}
 	if value, ok := lookup("CSMS_REDIS_URL"); ok {
 		config.RedisURL = strings.TrimSpace(value)

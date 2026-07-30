@@ -51,6 +51,9 @@ func Register(router *csms.Router, interval int, logger *slog.Logger, repository
 			Model: request.ChargePointModel, SerialNumber: firstString(request.ChargePointSerialNumber, request.ChargeBoxSerialNumber),
 			FirmwareVersion: value(request.FirmwareVersion), LastBootAt: bootedAt,
 		})
+		if err != nil {
+			logger.Error("boot notification station upsert failed", "identity", session.Identity(), "version", session.Version(), "error", err)
+		}
 		return v16.BootNotificationConfirmation{CurrentTime: formatTime(bootedAt), Interval: interval, Status: v16.BootNotificationConfirmationStatusAccepted}, err
 	}); err != nil {
 		return nil, err
@@ -62,6 +65,9 @@ func Register(router *csms.Router, interval int, logger *slog.Logger, repository
 			Model: request.ChargingStation.Model, SerialNumber: value(request.ChargingStation.SerialNumber),
 			FirmwareVersion: value(request.ChargingStation.FirmwareVersion), BootReason: string(request.Reason), LastBootAt: bootedAt,
 		})
+		if err != nil {
+			logger.Error("boot notification station upsert failed", "identity", session.Identity(), "version", session.Version(), "error", err)
+		}
 		return v201.BootNotificationConfirmation{CurrentTime: formatTime(bootedAt), Interval: interval, Status: v201.BootNotificationConfirmationRegistrationStatusEnumAccepted}, err
 	}); err != nil {
 		return nil, err
@@ -73,6 +79,9 @@ func Register(router *csms.Router, interval int, logger *slog.Logger, repository
 			Model: request.ChargingStation.Model, SerialNumber: value(request.ChargingStation.SerialNumber),
 			FirmwareVersion: value(request.ChargingStation.FirmwareVersion), BootReason: string(request.Reason), LastBootAt: bootedAt,
 		})
+		if err != nil {
+			logger.Error("boot notification station upsert failed", "identity", session.Identity(), "version", session.Version(), "error", err)
+		}
 		return v21.BootNotificationConfirmation{CurrentTime: formatTime(bootedAt), Interval: interval, Status: v21.BootNotificationConfirmationRegistrationStatusEnumAccepted}, err
 	}); err != nil {
 		return nil, err

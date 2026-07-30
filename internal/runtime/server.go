@@ -109,6 +109,17 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open mysql: %w", err)
 		}
+		// database/sql defaults to an unlimited connection pool. Under a
+		// reconnect storm (many stations reconnecting near-simultaneously
+		// after a network blip or a Runtime Pod restart), that lets a burst
+		// of concurrent BootNotification/StatusNotification writes open far
+		// more MySQL connections than the server can actually service,
+		// which fails outright instead of queuing. Bounding the pool turns
+		// that into backpressure: excess writes wait for a pooled
+		// connection instead of each opening a new one.
+		database.SetMaxOpenConns(config.MySQLMaxOpenConns)
+		database.SetMaxIdleConns(config.MySQLMaxOpenConns)
+		database.SetConnMaxLifetime(defaultMySQLConnMaxLifetime)
 		connectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := database.PingContext(connectCtx); err != nil {
@@ -214,6 +225,29 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		ocppConfig.OnConnect = ownership.onConnect
 		ocppConfig.OnDisconnect = ownership.onDisconnect
 	}
+	// A per-remote-IP handshake rate limit protects downstream stores
+	// (MySQL, Redis) from a reconnect storm: without it, a burst of
+	// stations retrying immediately after any rejection is self-sustaining
+	// — each failure keeps the backend saturated enough to cause the next
+	// one — and the system never gets a chance to recover on its own. This
+	// applies regardless of TLS/mTLS. Config built via a struct literal
+	// instead of LoadConfig (e.g. in tests) may leave this at its zero
+	// value, so fall back rather than fail NewIPRateLimiter's validation.
+	handshakeRateLimit := config.HandshakeRateLimit
+	if handshakeRateLimit <= 0 {
+		handshakeRateLimit = defaultHandshakeRateLimit
+	}
+	handshakeLimiter, err := csms.NewIPRateLimiter(handshakeRateLimit, time.Minute)
+	if err != nil {
+		if redisClient != nil {
+			redisClient.Close()
+		}
+		if database != nil {
+			database.Close()
+		}
+		return nil, fmt.Errorf("create handshake rate limiter: %w", err)
+	}
+	ocppConfig.Security.HandshakeLimiter = handshakeLimiter
 	if tlsConfig != nil && tlsConfig.ClientAuth == tls.VerifyClientCertIfGiven {
 		// The TLS layer verifies a client certificate if one is presented
 		// but does not require it (see buildTLSConfig), so
@@ -222,20 +256,18 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		// Authenticator adds the further check that a presented
 		// certificate actually belongs to the station connecting under
 		// this identity, not just any station trusted by the CA.
-		ocppConfig.Security = csms.SecurityConfig{
-			Profile:       csms.SecurityProfileTLSClientCertificate,
-			MinTLSVersion: tls.VersionTLS12,
-			Authenticator: csms.AuthenticatorFunc(func(_ context.Context, request csms.AuthenticationRequest) (csms.Principal, error) {
-				if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
-					return csms.Principal{}, fmt.Errorf("client certificate is required")
-				}
-				commonName := request.TLS.PeerCertificates[0].Subject.CommonName
-				if commonName != request.Identity {
-					return csms.Principal{}, fmt.Errorf("client certificate CN %q does not match station identity %q", commonName, request.Identity)
-				}
-				return csms.Principal{ID: request.Identity}, nil
-			}),
-		}
+		ocppConfig.Security.Profile = csms.SecurityProfileTLSClientCertificate
+		ocppConfig.Security.MinTLSVersion = tls.VersionTLS12
+		ocppConfig.Security.Authenticator = csms.AuthenticatorFunc(func(_ context.Context, request csms.AuthenticationRequest) (csms.Principal, error) {
+			if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
+				return csms.Principal{}, fmt.Errorf("client certificate is required")
+			}
+			commonName := request.TLS.PeerCertificates[0].Subject.CommonName
+			if commonName != request.Identity {
+				return csms.Principal{}, fmt.Errorf("client certificate CN %q does not match station identity %q", commonName, request.Identity)
+			}
+			return csms.Principal{ID: request.Identity}, nil
+		})
 	}
 	ocppServer, err = csms.New(ocppConfig)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -71,6 +72,48 @@ func TestOCPPEndpointRejectsPlainHTTPAndUnsupportedProtocol(t *testing.T) {
 	}
 	if response == nil || response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unsupported protocol response: %#v", response)
+	}
+}
+
+// TestHandshakeRateLimitProtectsAgainstReconnectStorms proves the fix for a
+// real incident found under load testing: a reconnect storm (many stations
+// retrying immediately after any rejection, with no backoff) is
+// self-sustaining without a limit on connection attempts, because each
+// failure keeps downstream stores busy enough to cause the next one. A
+// per-IP HandshakeLimiter turns excess attempts into a fast 429 instead of
+// letting them all reach the OCPP handler.
+func TestHandshakeRateLimitProtectsAgainstReconnectStorms(t *testing.T) {
+	server, err := New(Config{
+		HTTPAddr: ":0", HeartbeatInterval: 123, ShutdownTimeout: time.Second,
+		Versions:           []protocol.Version{protocol.OCPP16},
+		HandshakeRateLimit: 3,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := httptest.NewServer(server.Handler())
+	defer testServer.Close()
+
+	dialer := websocket.Dialer{Subprotocols: []string{"ocpp1.6"}}
+	allowed, limited := 0, 0
+	for i := 0; i < 6; i++ {
+		conn, resp, err := dialer.Dial(wsURL(testServer.URL)+fmt.Sprintf("/storm-station-%d", i), nil)
+		if err == nil {
+			allowed++
+			conn.Close()
+			continue
+		}
+		if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+			limited++
+			continue
+		}
+		t.Fatalf("attempt %d: unexpected failure (resp=%#v): %v", i, resp, err)
+	}
+	if allowed != 3 {
+		t.Errorf("expected exactly 3 handshakes allowed within the limit, got %d", allowed)
+	}
+	if limited != 3 {
+		t.Errorf("expected exactly 3 handshakes rejected with 429 once the limit is exceeded, got %d", limited)
 	}
 }
 

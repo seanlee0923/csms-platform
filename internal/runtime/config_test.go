@@ -19,7 +19,7 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 	tests := map[string]string{
 		"CSMS_HTTP_ADDR": "", "CSMS_HEARTBEAT_INTERVAL": "0", "CSMS_SHUTDOWN_TIMEOUT": "soon", "CSMS_LOG_LEVEL": "verbose",
 		"CSMS_SESSION_LEASE_TTL": "0s", "CSMS_SESSION_RENEW_INTERVAL": "never",
-		"CSMS_COMMAND_RATE_LIMIT": "0",
+		"CSMS_COMMAND_RATE_LIMIT": "0", "CSMS_MYSQL_MAX_OPEN_CONNS": "0",
 	}
 	for key, value := range tests {
 		t.Run(key, func(t *testing.T) {
@@ -59,6 +59,26 @@ func TestLoadConfigRejectsRenewIntervalAtOrAboveTTL(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestLoadConfigMySQLMaxOpenConns(t *testing.T) {
+	defaultConfig, err := loadConfig(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultConfig.MySQLMaxOpenConns != 25 {
+		t.Fatalf("expected default MySQLMaxOpenConns=25, got %d", defaultConfig.MySQLMaxOpenConns)
+	}
+
+	overridden, err := loadConfig(func(key string) (string, bool) {
+		return "5", key == "CSMS_MYSQL_MAX_OPEN_CONNS"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overridden.MySQLMaxOpenConns != 5 {
+		t.Fatalf("expected overridden MySQLMaxOpenConns=5, got %d", overridden.MySQLMaxOpenConns)
 	}
 }
 
