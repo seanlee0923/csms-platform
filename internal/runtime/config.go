@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -37,6 +38,10 @@ const (
 	// followed by another, keeping downstream stores like MySQL saturated
 	// indefinitely instead of letting them recover. This is independent of
 	// CSMS_COMMAND_RATE_LIMIT, which only governs the outbound command API.
+	// It keys on the connection's RemoteAddr by default; behind the
+	// recommended Ingress topology that is always the Ingress controller's
+	// own pod address, so CSMS_TRUSTED_PROXY_CIDRS must be set for it to key
+	// on each station's real address instead (see trustedproxy.go).
 	defaultHandshakeRateLimit = 30
 
 	// These default paths match the volume mount convention the Operator
@@ -66,6 +71,7 @@ type Config struct {
 	TLSCertFile        string
 	TLSKeyFile         string
 	TLSClientCAFile    string
+	TrustedProxyCIDRs  []string
 }
 
 func LoadConfig() (Config, error) {
@@ -181,6 +187,15 @@ func loadConfig(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookup("CSMS_TLS_CLIENT_CA_FILE"); ok {
 		config.TLSClientCAFile = strings.TrimSpace(value)
+	}
+	if value, ok := lookup("CSMS_TRUSTED_PROXY_CIDRS"); ok {
+		cidrs := splitNonEmpty(value)
+		for _, cidr := range cidrs {
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				return Config{}, fmt.Errorf("CSMS_TRUSTED_PROXY_CIDRS contains invalid CIDR %q: %w", cidr, err)
+			}
+		}
+		config.TrustedProxyCIDRs = cidrs
 	}
 	return config, nil
 }

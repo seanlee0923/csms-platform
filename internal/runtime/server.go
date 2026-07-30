@@ -247,7 +247,17 @@ func New(config Config, logger *slog.Logger) (*Server, error) {
 		}
 		return nil, fmt.Errorf("create handshake rate limiter: %w", err)
 	}
-	ocppConfig.Security.HandshakeLimiter = handshakeLimiter
+	proxyResolver, err := newTrustedProxyResolver(config.TrustedProxyCIDRs)
+	if err != nil {
+		if redisClient != nil {
+			redisClient.Close()
+		}
+		if database != nil {
+			database.Close()
+		}
+		return nil, fmt.Errorf("create trusted proxy resolver: %w", err)
+	}
+	ocppConfig.Security.HandshakeLimiter = &resolvedIPHandshakeLimiter{limiter: handshakeLimiter, resolver: proxyResolver}
 	if tlsConfig != nil && tlsConfig.ClientAuth == tls.VerifyClientCertIfGiven {
 		// The TLS layer verifies a client certificate if one is presented
 		// but does not require it (see buildTLSConfig), so

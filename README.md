@@ -133,6 +133,7 @@ env var를 `CSMS.spec.config`에 자유롭게 넣으면 된다(아래
 | `CSMS_MYSQL_DSN` | 비어 있음 | MySQL DSN. 비어 있으면 in-memory repository 사용 |
 | `CSMS_MYSQL_MAX_OPEN_CONNS` | `25` | Runtime 프로세스당 동시 MySQL 연결 수 상한(replica마다 별도 적용). 재연결 폭주로 쓰기가 몰려도 초과분은 대기하지, 새 연결을 무제한으로 열지 않는다 |
 | `CSMS_HANDSHAKE_RATE_LIMIT` | `30` | 원격 IP별 분당 WebSocket handshake 시도 허용 횟수. 초과분은 즉시 429로 거부되어, 재연결 폭풍이 스스로를 계속 증폭시키는 것을 막는다(`CSMS_COMMAND_RATE_LIMIT`과는 별개 — 그건 충전기 명령 API용) |
+| `CSMS_TRUSTED_PROXY_CIDRS` | 비어 있음 | 쉼표로 구분한 신뢰하는 리버스 프록시 CIDR 목록(예: ingress-nginx pod CIDR). 설정하면 `CSMS_HANDSHAKE_RATE_LIMIT`이 연결의 RemoteAddr 대신 `X-Forwarded-For`의 첫 주소로 station을 구분한다 — Ingress 뒤에서는 RemoteAddr가 항상 Ingress controller 자신의 주소라, 설정하지 않으면 fleet 전체가 하나의 rate limit budget을 공유하게 된다. 미설정 시 안전한 기본값(RemoteAddr 그대로 사용)으로 동작 |
 | `CSMS_REDIS_URL` | 비어 있음 | Redis URL. 설정하면 분산 session ownership과 command bus 활성화 |
 | `CSMS_API_KEY` | 비어 있음 | 단일 command API Bearer 키. `CSMS_API_KEYS`가 없을 때 사용 |
 | `CSMS_API_KEYS` | 비어 있음 | 쉼표로 구분한 command API Bearer 키 목록. 무중단 키 교체용 |
@@ -483,6 +484,14 @@ manifest를 적용한다 — Operator가 이미 `csms-runtime` Deployment를 관
   연결 풀 제한(`CSMS_MYSQL_MAX_OPEN_CONNS`)이 없던 이전 버전에서는 같은
   시나리오에서 재연결이 스스로를 증폭시키며 BootNotification이 대량
   실패했다 — 실제로 겪고 고친 문제다.
+- **위 handshake rate limit은 기본적으로 연결의 RemoteAddr를 기준으로
+  하므로, 권장 배포 구성인 Ingress 뒤에서는 모든 station이 Ingress
+  controller의 pod 주소 하나로 잡혀 fleet 전체가 rate limit budget을
+  공유하는 gap이 있었다.** `ocpp` 라이브러리에 `HandshakeAttempt.Header`를
+  추가해([seanlee0923/ocpp#1](https://github.com/seanlee0923/ocpp/issues/1))
+  이 Runtime에서 `CSMS_TRUSTED_PROXY_CIDRS`로 신뢰하는 프록시 CIDR를
+  설정하면 `X-Forwarded-For`의 실제 station 주소로 rate limit을 적용하도록
+  고쳤다. 미설정 시에는 이전과 동일하게 동작한다(안전한 기본값).
 
 ## 세션 소유권과 명령 전달 모델
 

@@ -117,6 +117,37 @@ func TestHandshakeRateLimitProtectsAgainstReconnectStorms(t *testing.T) {
 	}
 }
 
+// TestHandshakeRateLimitUsesTrustedProxyHeaderWhenConfigured proves the fix
+// for a follow-up gap found after the reconnect-storm incident: behind the
+// recommended Ingress topology, every HandshakeAttempt.RemoteAddr is the
+// Ingress controller's own pod address, so the per-IP limiter collapses into
+// one shared budget for the whole fleet instead of one per station. With
+// CSMS_TRUSTED_PROXY_CIDRS covering the (loopback) proxy address, each
+// station's own X-Forwarded-For address gets its own budget again.
+func TestHandshakeRateLimitUsesTrustedProxyHeaderWhenConfigured(t *testing.T) {
+	server, err := New(Config{
+		HTTPAddr: ":0", HeartbeatInterval: 123, ShutdownTimeout: time.Second,
+		Versions:           []protocol.Version{protocol.OCPP16},
+		HandshakeRateLimit: 1,
+		TrustedProxyCIDRs:  []string{"127.0.0.1/32", "::1/128"},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testServer := httptest.NewServer(server.Handler())
+	defer testServer.Close()
+
+	dialer := websocket.Dialer{Subprotocols: []string{"ocpp1.6"}}
+	for i := 0; i < 5; i++ {
+		header := http.Header{"X-Forwarded-For": []string{fmt.Sprintf("203.0.113.%d", i)}}
+		conn, resp, err := dialer.Dial(wsURL(testServer.URL)+fmt.Sprintf("/proxy-station-%d", i), header)
+		if err != nil {
+			t.Fatalf("station %d: unexpected rejection (resp=%#v): %v", i, resp, err)
+		}
+		conn.Close()
+	}
+}
+
 func TestCoreFlowAllVersions(t *testing.T) {
 	runtimeServer := newTestServer(t)
 	testServer := httptest.NewServer(runtimeServer.Handler())

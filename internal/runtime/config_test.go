@@ -20,6 +20,7 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 		"CSMS_HTTP_ADDR": "", "CSMS_HEARTBEAT_INTERVAL": "0", "CSMS_SHUTDOWN_TIMEOUT": "soon", "CSMS_LOG_LEVEL": "verbose",
 		"CSMS_SESSION_LEASE_TTL": "0s", "CSMS_SESSION_RENEW_INTERVAL": "never",
 		"CSMS_COMMAND_RATE_LIMIT": "0", "CSMS_MYSQL_MAX_OPEN_CONNS": "0",
+		"CSMS_TRUSTED_PROXY_CIDRS": "not-a-cidr",
 	}
 	for key, value := range tests {
 		t.Run(key, func(t *testing.T) {
@@ -79,6 +80,27 @@ func TestLoadConfigMySQLMaxOpenConns(t *testing.T) {
 	}
 	if overridden.MySQLMaxOpenConns != 5 {
 		t.Fatalf("expected overridden MySQLMaxOpenConns=5, got %d", overridden.MySQLMaxOpenConns)
+	}
+}
+
+func TestLoadConfigTrustedProxyCIDRs(t *testing.T) {
+	defaultConfig, err := loadConfig(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultConfig.TrustedProxyCIDRs) != 0 {
+		t.Fatalf("expected no trusted proxy CIDRs by default, got %v", defaultConfig.TrustedProxyCIDRs)
+	}
+
+	overridden, err := loadConfig(func(key string) (string, bool) {
+		return "10.0.0.0/8, 192.168.0.0/16", key == "CSMS_TRUSTED_PROXY_CIDRS"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"10.0.0.0/8", "192.168.0.0/16"}
+	if len(overridden.TrustedProxyCIDRs) != len(want) || overridden.TrustedProxyCIDRs[0] != want[0] || overridden.TrustedProxyCIDRs[1] != want[1] {
+		t.Fatalf("TrustedProxyCIDRs = %v, want %v", overridden.TrustedProxyCIDRs, want)
 	}
 }
 
